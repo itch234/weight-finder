@@ -89,6 +89,9 @@
   .btn.primary { background: var(--marker); color: #1A1400; }
   .btn.quiet { background: rgba(242, 239, 232, .12); color: var(--vf-ink); }
   .btn:disabled { opacity: .55; }
+  .session-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-2); }
+  .text-btn { border: 0; background: none; text-decoration: underline; min-height: 36px; padding: 4px 8px; }
+  .no-source .session-row { display: none; }
 
   /* 天秤 */
   .beam-arm { transform-box: view-box; transform-origin: 110px 36px; transition: transform .28s ease-out; }
@@ -166,19 +169,22 @@
         <div class="intro-actions">
           <button class="btn primary" id="startBtn" type="button">カメラを起動</button>
           <button class="btn quiet" id="introPhotoBtn" type="button">写真で判定</button>
+          <button class="btn quiet" id="demoBtn" type="button">デモで試す</button>
         </div>
         <p class="note">重さは明るさや色の差、鮮やかさ、細かさから推定しています。上にあるものほど重く感じる補正も入っています。</p>
+        <p class="note">写真・映像はこの端末のブラウザ内で解析し、サーバーへ送信しません。点数は構図の目安で、写真の良し悪しを決めるものではありません。</p>
       </div>
     </div>
   </main>
 
   <div class="deck-wrap">
     <section class="deck" aria-label="判定結果と操作">
+      <div class="session-row"><span id="sourceLabel"></span><button class="text-btn" id="closeBtn" type="button">終了する</button></div>
       <div>
         <p class="instr" id="instr" aria-live="polite">カメラか写真を選んでください</p>
         <div class="status-row">
           <span class="status" id="status"></span>
-          <span class="score"><span class="num" id="score">--</span>点</span>
+          <span class="score" title="構図の目標への近さを示す目安">目安 <span class="num" id="score">--</span>点</span>
         </div>
       </div>
       <p class="error" id="error" role="alert" hidden></p>
@@ -200,7 +206,7 @@
       <div class="controls">
         <div class="seg" role="radiogroup" aria-label="判定のしかた">
           <button type="button" role="radio" aria-checked="true" data-mode="balance">重心</button>
-          <button type="button" role="radio" aria-checked="false" data-mode="thirds">三分割</button>
+          <button type="button" role="radio" aria-checked="false" tabindex="-1" data-mode="thirds">三分割</button>
         </div>
         <button class="ctl" id="ratioBtn" type="button" aria-label="縦横比を切り替え">比率<span class="num" id="ratioVal">フル</span></button>
         <button class="ctl" id="mapBtn" type="button" aria-pressed="false">重さマップ</button>
@@ -475,6 +481,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   const pL = $('pL'), pR = $('pR'), pT = $('pT'), pB = $('pB'), beamArm = $('beamArm'), wL = $('wL'), wR = $('wR');
   const ratioBtn = $('ratioBtn'), ratioVal = $('ratioVal'), mapBtn = $('mapBtn'), pauseBtn = $('pauseBtn'), fileIn = $('fileIn');
   const segBtns = Array.from(document.querySelectorAll('.seg button'));
+  let inputRequest = 0;
 
   const octx = overlay.getContext('2d');
   const sctx = still.getContext('2d');
@@ -626,6 +633,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     const ev = st.evl, e = st.ema;
     let instr = 'カメラか写真を選んでください', status = '', score = '--', ok = false;
     document.body.classList.toggle('no-source', st.source === 'none');
+    setText($('sourceLabel'), st.source === 'camera' ? (st.paused ? 'カメラ · 一時停止中' : 'カメラ · ライブ') : '写真 · 端末内で解析');
     if (ev) {
       if (ev.kind === 'flat') {
         instr = '目立つものが少ない画面です';
@@ -638,11 +646,11 @@ if (typeof module !== 'undefined') module.exports = WF;
         const d = WF.direction(ev.dx, ev.dy);
         if (ev.kind === 'balance') {
           if (ev.ok) { instr = '整ってる'; status = '重心が中央付近にあります'; ok = true; }
-          else { instr = `カメラを${d.amt}${d.dir}へ`; status = `${d.dir}が重い`; }
+          else { instr = st.source === 'photo' ? `${d.dir}に重さが寄っています` : `カメラを${d.amt}${d.dir}へ`; status = st.source === 'photo' ? '比率を変えて、重心の変化を確認できます' : `${d.dir}が重い`; }
         } else if (ev.ok) {
           instr = '三分割の交点に乗ってる'; status = `主役は${ev.name}の交点にあります`; ok = true;
         } else {
-          instr = `カメラを${d.amt}${d.dir}へ`; status = `主役を${ev.name}の交点へ`;
+          instr = st.source === 'photo' ? `主役は${ev.name}の交点から${d.dir}寄り` : `カメラを${d.amt}${d.dir}へ`; status = st.source === 'photo' ? '比率を変えて、主役の位置を確認できます' : `主役を${ev.name}の交点へ`;
         }
       }
     }
@@ -861,8 +869,31 @@ if (typeof module !== 'undefined') module.exports = WF;
     video.srcObject = null;
   }
 
-  async function startCamera() {
+  function beginInput() {
+    inputRequest++;
+    startBtn.disabled = false;
+    setText(startBtn, 'カメラを起動');
+    pauseBtn.disabled = st.source === 'none';
     hideError();
+    return inputRequest;
+  }
+
+  function closeSource() {
+    beginInput();
+    stopStream();
+    st.img = null; st.source = 'none'; st.paused = false;
+    resetAnalysis();
+    frame.hidden = true; intro.hidden = false;
+    pauseBtn.disabled = true;
+    pauseBtn.setAttribute('aria-pressed', 'false');
+    setText(pauseBtn, '一時停止');
+    updateDeck();
+    startBtn.focus();
+  }
+
+  async function startCamera() {
+    const request = beginInput();
+    let acquired = null;
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
       showError(embedded ? MSG_EMBED : 'この表示環境ではカメラを使えません（https のページで開く必要があります）。写真なら判定できます。');
       return;
@@ -879,20 +910,31 @@ if (typeof module !== 'undefined') module.exports = WF;
         audio: false,
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, aspectRatio: { ideal: 4 / 3 } },
       });
+      if (request !== inputRequest) { stream.getTracks().forEach((t) => t.stop()); return; }
+      acquired = stream;
       stopStream();
       st.stream = stream;
       video.muted = true;
       video.srcObject = stream;
-      await new Promise((resolve) => {
-        if (video.readyState >= 1 && video.videoWidth) return resolve();
-        const done = () => { video.removeEventListener('loadedmetadata', done); resolve(); };
-        video.addEventListener('loadedmetadata', done);
-        setTimeout(done, 2500);
+      await new Promise((resolve, reject) => {
+        if (video.readyState >= 2 && video.videoWidth) return resolve();
+        const done = () => {
+          clearTimeout(timer);
+          video.removeEventListener('loadeddata', done);
+          if (video.readyState >= 2 && video.videoWidth) resolve();
+          else reject(new Error('映像を取得できませんでした'));
+        };
+        const timer = setTimeout(done, 8000);
+        video.addEventListener('loadeddata', done);
       });
-      try { await video.play(); } catch (_) { /* autoplay 制限時もmutedなら通常は再生される */ }
+      if (request !== inputRequest) return;
+      await video.play();
+      if (request !== inputRequest) return;
       st.img = null;
       setSource('camera');
     } catch (err) {
+      if (request !== inputRequest) return;
+      if (acquired && st.stream === acquired) stopStream();
       const n = err && err.name;
       if (n === 'NotAllowedError' || n === 'SecurityError') {
         showError(embedded ? MSG_EMBED : MSG_DENIED);
@@ -903,8 +945,11 @@ if (typeof module !== 'undefined') module.exports = WF;
       }
       if (st.source !== 'none') pauseBtn.disabled = false;
     } finally {
-      startBtn.disabled = false;
-      setText(startBtn, 'カメラを起動');
+      if (request === inputRequest) {
+        startBtn.disabled = false;
+        pauseBtn.disabled = st.source === 'none';
+        setText(startBtn, 'カメラを起動');
+      }
     }
   }
 
@@ -912,17 +957,40 @@ if (typeof module !== 'undefined') module.exports = WF;
   fileIn.addEventListener('change', () => {
     const f = fileIn.files && fileIn.files[0];
     if (!f) return;
-    hideError();
-    const reader = new FileReader();
-    reader.onerror = () => showError('写真を読み込めませんでした。別の写真で試してください。');
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => { stopStream(); st.img = img; setSource('photo'); fileIn.value = ''; };
-      img.onerror = () => { showError('この形式の画像は読み込めませんでした。JPEGかPNGで試してください。'); fileIn.value = ''; };
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(f);
+    fileIn.value = '';
+    const url = URL.createObjectURL(f);
+    loadPhoto(url, () => URL.revokeObjectURL(url));
   });
+
+  function loadPhoto(url, cleanup = () => {}) {
+    const request = beginInput();
+    // Cancel a camera that is still starting, while retaining the current photo.
+    if (st.source !== 'camera') stopStream();
+    const img = new Image();
+    img.onload = () => {
+      cleanup();
+      if (request !== inputRequest) return;
+      stopStream(); st.img = img; setSource('photo');
+    };
+    img.onerror = () => {
+      cleanup();
+      if (request === inputRequest) showError('この形式の画像は読み込めませんでした。JPEGかPNGで試してください。');
+    };
+    img.src = url;
+  }
+
+  $('demoBtn').addEventListener('click', () => {
+    const demo = document.createElement('canvas');
+    demo.width = 960; demo.height = 640;
+    const ctx = demo.getContext('2d');
+    ctx.fillStyle = '#cddde0'; ctx.fillRect(0, 0, 960, 640);
+    ctx.fillStyle = '#789484'; ctx.fillRect(0, 400, 960, 240);
+    ctx.fillStyle = '#e6ad49'; ctx.beginPath(); ctx.arc(680, 220, 72, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#344e46'; ctx.fillRect(660, 410, 40, 135);
+    ctx.beginPath(); ctx.moveTo(680, 270); ctx.lineTo(570, 440); ctx.lineTo(790, 440); ctx.fill();
+    loadPhoto(demo.toDataURL('image/png'));
+  });
+  $('closeBtn').addEventListener('click', closeSource);
 
   // ---- 操作 ----
   startBtn.addEventListener('click', startCamera);
@@ -931,14 +999,21 @@ if (typeof module !== 'undefined') module.exports = WF;
 
   segBtns.forEach((b) => b.addEventListener('click', () => {
     st.mode = b.dataset.mode;
-    segBtns.forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+    segBtns.forEach((x) => { x.setAttribute('aria-checked', String(x === b)); x.tabIndex = x === b ? 0 : -1; });
     st.okB = st.okT = false; st.tIdx = null;
     evaluate(); updateDeck(); st.dirty = true;
+  }));
+  segBtns.forEach((b, i) => b.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? segBtns.length - 1 :
+      (i + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 1) + segBtns.length) % segBtns.length;
+    segBtns[next].focus(); segBtns[next].click();
   }));
   ratioBtn.addEventListener('click', () => {
     st.ratio = (st.ratio + 1) % RATIOS.length;
     setText(ratioVal, RATIOS[st.ratio].label);
-    st.ema = null; st.disp = null; st.evl = null; st.mapReady = false;
+    resetAnalysis();
     if (st.source === 'photo' || st.paused) analyzeNow(false);
     st.dirty = true;
   });
@@ -971,6 +1046,7 @@ if (typeof module !== 'undefined') module.exports = WF;
 
   if (window.ResizeObserver) new ResizeObserver(() => layout()).observe(vf);
   window.addEventListener('resize', layout);
+  window.addEventListener('pagehide', closeSource);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && st.source === 'camera' && !st.paused) video.play().catch(() => {});
   });
