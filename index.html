@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ウェイトファインダー</title>
+<meta name="description" content="画面の中の重さの偏りを測って、カメラを向け直す方向を出す構図アシスタント。写真・映像は端末内で処理します。">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="ウェイトファインダー">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600&family=IBM+Plex+Sans+JP:wght@400;600&display=swap" rel="stylesheet">
@@ -126,24 +135,55 @@
   .ctl[aria-pressed="true"] { background: var(--on); color: var(--on-ink); }
   .ctl:disabled { opacity: .38; cursor: default; }
 
+  .shoot-row { grid-column: span 3; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px; }
+  .shoot-row.solo { grid-template-columns: 1fr; }
+  .ctl.shoot { background: var(--marker); color: #1A1400; min-height: 48px; font-size: 15px; }
+  .ctl.shoot:disabled { opacity: .6; }
+  .no-source .shoot-row { display: none; }
+
+  /* 撮影のフィードバック */
+  .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  .flash.go { animation: flash .45s ease-out; }
+  @keyframes flash { from { opacity: .85; } to { opacity: 0; } }
+  .toast { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 999px; background: rgba(0, 0, 0, .72); color: var(--vf-ink); font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+
+  /* 複数写真の比較 */
+  .strip { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 6px; padding: 18px 10px 8px; overflow-x: auto; scrollbar-width: thin; background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, .65)); -webkit-overflow-scrolling: touch; }
+  .strip button { flex: 0 0 auto; position: relative; width: 64px; height: 48px; padding: 0; border: 2px solid rgba(255, 255, 255, .25); border-radius: 8px; background: #2a2a2a; overflow: hidden; }
+  .strip button[aria-current="true"] { border-color: var(--marker); }
+  .strip button:focus-visible { outline: 2px solid var(--marker); outline-offset: 1px; }
+  .strip canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .strip .badge { position: absolute; right: 2px; bottom: 2px; padding: 0 4px; border-radius: 4px; font-family: var(--num); font-size: 12px; font-weight: 600; line-height: 16px; color: #fff; background: rgba(0, 0, 0, .7); }
+  .strip .badge.best { color: #1A1400; background: var(--marker); }
+
+  /* ドラッグ＆ドロップ */
+  .drop-hint { position: absolute; inset: 10px; display: none; place-items: center; border: 2px dashed var(--marker); border-radius: 16px; background: rgba(0, 0, 0, .55); color: var(--vf-ink); font-weight: 600; font-size: 17px; pointer-events: none; }
+  .dragover .drop-hint { display: grid; }
+  .frame.mirror > video { transform: scaleX(-1); }
+
   .no-source .scale, .no-source .vert, .no-source .status-row { display: none; }
   @media (orientation: portrait) and (max-height: 720px) {
     .deck { padding-top: 10px; gap: 8px; }
     .instr { font-size: clamp(18px, 5.2vw, 21px); }
     .beam { height: 44px; }
     .ctl { min-height: 40px; }
+    .ctl.shoot { min-height: 42px; }
     .seg button { min-height: 34px; }
     .intro h1 { font-size: clamp(24px, 7vw, 30px); }
   }
   @media (orientation: landscape) and (max-height: 600px) {
     body { grid-template-rows: none; grid-template-columns: minmax(0, 1fr) clamp(310px, 40vw, 400px); }
     .ctl { font-size: 13px; }
-    .deck-wrap { border-top: 0; border-left: 1px solid var(--line); overflow-y: auto; display: grid; align-content: center; }
-    .deck { padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); gap: 10px; }
+    /* flex + margin:auto は、内容が収まるときは中央寄せ、あふれるときは上端から並べてスクロールできる */
+    .deck-wrap { border-top: 0; border-left: 1px solid var(--line); overflow-y: auto; display: flex; flex-direction: column; }
+    .deck { margin: auto; padding: 12px 14px calc(12px + env(safe-area-inset-bottom)); gap: 10px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .beam-arm { transition: none; }
     .intro-beam .beam-arm { animation: none; }
+    .flash.go { animation: none; }
+    .toast { transition: none; }
   }
 </style>
 </head>
@@ -153,7 +193,11 @@
       <video id="video" playsinline muted autoplay></video>
       <canvas id="still" hidden></canvas>
       <canvas id="overlay" aria-hidden="true"></canvas>
+      <div class="flash" id="flash" aria-hidden="true"></div>
     </div>
+    <div class="strip" id="strip" role="group" aria-label="読み込んだ写真" hidden></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="drop-hint" aria-hidden="true">画像をドロップして判定</div>
     <div class="intro" id="intro">
       <div class="intro-inner">
         <svg class="intro-beam" viewBox="0 0 168 40" aria-hidden="true">
@@ -173,6 +217,7 @@
         </div>
         <p class="note">重さは明るさや色の差、鮮やかさ、細かさから推定しています。上にあるものほど重く感じる補正も入っています。</p>
         <p class="note">写真・映像はこの端末のブラウザ内で解析し、サーバーへ送信しません。点数は構図の目安で、写真の良し悪しを決めるものではありません。</p>
+        <p class="note">写真は複数まとめて選ぶと、点数を並べて見比べられます。パソコンでは画像のドラッグ＆ドロップや貼り付けでも読み込めます。</p>
       </div>
     </div>
   </main>
@@ -212,8 +257,12 @@
         <button class="ctl" id="mapBtn" type="button" aria-pressed="false">重さマップ</button>
         <button class="ctl" id="pauseBtn" type="button" aria-pressed="false" disabled>一時停止</button>
         <button class="ctl" id="photoBtn" type="button">写真で判定</button>
+        <div class="shoot-row solo" id="shootRow">
+          <button class="ctl shoot" id="shootBtn" type="button">撮影</button>
+          <button class="ctl" id="flipBtn" type="button" hidden>カメラ切替</button>
+        </div>
       </div>
-      <input class="visually-hidden" id="fileIn" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
+      <input class="visually-hidden" id="fileIn" type="file" accept="image/*" multiple tabindex="-1" aria-hidden="true">
     </section>
   </div>
 
@@ -467,7 +516,20 @@ const WF = (() => {
     return { x: 0, y: (sh - ch) / 2, w: sw, h: ch };
   }
 
-  return { analyze, direction, evalBalance, evalThirds, cropRect, THIRDS, TOL_X, TOL_Y };
+  // 一覧比較用: 解析結果からモードごとの点数を出す(判定できないときは null)
+  function scoreFor(res, mode) {
+    if (!res || res.flat) return null;
+    if (mode === 'thirds') return res.subject ? evalThirds(res.subject, null, false).score : null;
+    return evalBalance(res.cx, res.cy, false).score;
+  }
+
+  // 保存ファイル名用のタイムスタンプ(ローカル時刻・YYYYMMDD_HHMMSS)
+  function fileStamp(d) {
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  }
+
+  return { analyze, direction, evalBalance, evalThirds, cropRect, scoreFor, fileStamp, THIRDS, TOL_X, TOL_Y };
 })();
 if (typeof module !== 'undefined') module.exports = WF;
 </script>
@@ -480,6 +542,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   const instrEl = $('instr'), statusEl = $('status'), scoreEl = $('score'), errorEl = $('error');
   const pL = $('pL'), pR = $('pR'), pT = $('pT'), pB = $('pB'), beamArm = $('beamArm'), wL = $('wL'), wR = $('wR');
   const ratioBtn = $('ratioBtn'), ratioVal = $('ratioVal'), mapBtn = $('mapBtn'), pauseBtn = $('pauseBtn'), fileIn = $('fileIn');
+  const shootBtn = $('shootBtn'), flipBtn = $('flipBtn'), shootRow = $('shootRow'), strip = $('strip'), toastEl = $('toast'), flashEl = $('flash');
   const segBtns = Array.from(document.querySelectorAll('.seg button'));
   let inputRequest = 0;
 
@@ -508,9 +571,28 @@ if (typeof module !== 'undefined') module.exports = WF;
     flatRun: 0, flatShown: false,
     lastT: 0, vw: 0, vh: 0,
     fw: 0, fh: 0, dpr: 1, mapReady: false, dirty: true,
+    facing: 'environment', mirror: false, cameraIds: [], deviceId: null, wasOk: false,
+    photos: [], photoIdx: -1,
   };
 
   const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
+
+  // ---- 設定の記憶(判定モード・比率・カメラの向き) ----
+  const PREF_KEY = 'weight-finder:prefs';
+  function loadPrefs() { try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (_) { return {}; } }
+  function savePrefs() {
+    try { localStorage.setItem(PREF_KEY, JSON.stringify({ mode: st.mode, ratio: RATIOS[st.ratio].label, facing: st.facing })); } catch (_) {}
+  }
+  function applyPrefs() {
+    const p = loadPrefs();
+    if (p.mode === 'thirds' || p.mode === 'balance') {
+      st.mode = p.mode;
+      segBtns.forEach((x) => { const on = x.dataset.mode === st.mode; x.setAttribute('aria-checked', String(on)); x.tabIndex = on ? 0 : -1; });
+    }
+    const ri = RATIOS.findIndex((r) => r.label === p.ratio);
+    if (ri >= 0) { st.ratio = ri; setText(ratioVal, RATIOS[ri].label); }
+    if (p.facing === 'user' || p.facing === 'environment') st.facing = p.facing;
+  }
   const embedded = (() => { try { return window.self !== window.top; } catch (_) { return true; } })();
   const MSG_EMBED = '埋め込み表示ではカメラを使えません。写真での判定はできます。カメラで使うには、GitHub Pagesなどに置いたページで開いてください。';
   const MSG_DENIED = 'カメラの許可がオフになっています。ブラウザのサイト設定でカメラを許可してから、もう一度押してください。写真なら今すぐ判定できます。';
@@ -523,6 +605,16 @@ if (typeof module !== 'undefined') module.exports = WF;
     return [0, 0];
   }
   function srcEl() { return st.source === 'photo' ? st.img : (st.paused ? frozen : video); }
+
+  // 前面カメラは鏡像で扱う。ライブ映像だけを反転して描き、静止画(frozen / still)は反転済みの内容を持つ
+  function drawSrc(ctx, el, sx, sy, sw, sh, dx, dy, dw, dh) {
+    if (st.mirror && el === video) {
+      ctx.save();
+      ctx.translate(dx + dw, dy); ctx.scale(-1, 1);
+      ctx.drawImage(el, el.videoWidth - sx - sw, sy, sw, sh, 0, 0, dw, dh);
+      ctx.restore();
+    } else ctx.drawImage(el, sx, sy, sw, sh, dx, dy, dw, dh);
+  }
 
   // ---- レイアウト ----
   function layout() {
@@ -556,25 +648,30 @@ if (typeof module !== 'undefined') module.exports = WF;
   }
 
   // ---- 解析 ----
-  function analyzeNow(live) {
-    const [sw, sh] = srcDims();
-    if (!sw || !sh) return;
+  const LONG = 160;
+  // 現在の比率で切り抜き、長辺160pxに縮小したRGBAを返す
+  function sample(el, sw, sh) {
     const crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r);
-    const LONG = 160;
     let aw, ah;
     if (crop.w >= crop.h) { aw = LONG; ah = Math.max(8, Math.round(LONG * crop.h / crop.w)); }
     else { ah = LONG; aw = Math.max(8, Math.round(LONG * crop.w / crop.h)); }
     if (acan.width !== aw || acan.height !== ah) { acan.width = aw; acan.height = ah; }
-    let data;
+    drawSrc(actx, el, crop.x, crop.y, crop.w, crop.h, 0, 0, aw, ah);
+    return { data: actx.getImageData(0, 0, aw, ah).data, aw, ah };
+  }
+
+  function analyzeNow(live) {
+    const [sw, sh] = srcDims();
+    if (!sw || !sh) return;
+    let smp;
     try {
-      actx.drawImage(srcEl(), crop.x, crop.y, crop.w, crop.h, 0, 0, aw, ah);
-      data = actx.getImageData(0, 0, aw, ah).data;
+      smp = sample(srcEl(), sw, sh);
     } catch (e) {
       showError('画像を読み取れませんでした。別の写真で試してください。');
       return;
     }
     const hint = st.ema && st.ema.sub ? st.ema.sub : null;
-    const res = WF.analyze(data, aw, ah, hint);
+    const res = WF.analyze(smp.data, smp.aw, smp.ah, hint);
     st.res = res;
 
     const a = live ? 0.3 : 1;
@@ -608,6 +705,10 @@ if (typeof module !== 'undefined') module.exports = WF;
     if (st.showMap) buildMap(res);
     evaluate();
     updateDeck();
+    // 構図が整った瞬間に短く振動(画面を見ずに構えているときの合図)
+    const okNow = !!(st.evl && st.evl.ok);
+    if (live && okNow && !st.wasOk && navigator.vibrate) { try { navigator.vibrate(30); } catch (_) {} }
+    st.wasOk = okNow;
     st.dirty = true;
   }
 
@@ -669,6 +770,13 @@ if (typeof module !== 'undefined') module.exports = WF;
     const rl = 4 + 7 * Math.sqrt(left), rr = 4 + 7 * Math.sqrt(1 - left);
     wL.setAttribute('r', rl.toFixed(1)); wL.setAttribute('cy', (35 - rl).toFixed(1));
     wR.setAttribute('r', rr.toFixed(1)); wR.setAttribute('cy', (35 - rr).toFixed(1));
+
+    const camera = st.source === 'camera';
+    setText(shootBtn, camera ? '撮影' : 'この枠で保存');
+    const showFlip = camera && st.cameraIds.length > 1;
+    if (flipBtn.hidden === showFlip) { flipBtn.hidden = !showFlip; shootRow.classList.toggle('solo', !showFlip); }
+    const showStrip = st.source === 'photo' && st.photos.length > 1;
+    if (strip.hidden === showStrip) strip.hidden = !showStrip;
   }
 
   function buildMap(res) {
@@ -848,12 +956,13 @@ if (typeof module !== 'undefined') module.exports = WF;
   // ---- 入力ソース ----
   function resetAnalysis() {
     st.res = null; st.ema = null; st.disp = null; st.evl = null;
-    st.okB = st.okT = false; st.tIdx = null; st.flatRun = 0; st.flatShown = false; st.mapReady = false;
+    st.okB = st.okT = false; st.tIdx = null; st.flatRun = 0; st.flatShown = false; st.mapReady = false; st.wasOk = false;
   }
   function setSource(s) {
     st.source = s; st.paused = false;
     resetAnalysis();
     intro.hidden = true;
+    frame.classList.toggle('mirror', s === 'camera' && st.mirror);
     video.hidden = s !== 'camera';
     still.hidden = s === 'camera';
     pauseBtn.disabled = false;
@@ -881,7 +990,8 @@ if (typeof module !== 'undefined') module.exports = WF;
   function closeSource() {
     beginInput();
     stopStream();
-    st.img = null; st.source = 'none'; st.paused = false;
+    st.img = null; st.source = 'none'; st.paused = false; st.mirror = false;
+    setPhotos([]);
     resetAnalysis();
     frame.hidden = true; intro.hidden = false;
     pauseBtn.disabled = true;
@@ -891,7 +1001,20 @@ if (typeof module !== 'undefined') module.exports = WF;
     startBtn.focus();
   }
 
-  async function startCamera() {
+  async function countCameras() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      st.cameraIds = devs.filter((d) => d.kind === 'videoinput').map((d) => d.deviceId);
+    } catch (_) { st.cameraIds = []; }
+    updateDeck();
+  }
+  if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
+    navigator.mediaDevices.addEventListener('devicechange', countCameras);
+  }
+
+  // deviceId を渡すとそのカメラを指定して開く。省略時は記憶した向き(背面 / 前面)で開く
+  async function startCamera(deviceId) {
     const request = beginInput();
     let acquired = null;
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
@@ -906,14 +1029,18 @@ if (typeof module !== 'undefined') module.exports = WF;
     startBtn.disabled = true; pauseBtn.disabled = true;
     setText(startBtn, '起動中…');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, aspectRatio: { ideal: 4 / 3 } },
-      });
+      const wants = { width: { ideal: 1920 }, aspectRatio: { ideal: 4 / 3 } };
+      if (typeof deviceId === 'string' && deviceId) wants.deviceId = { exact: deviceId };
+      else wants.facingMode = { ideal: st.facing };
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: wants });
       if (request !== inputRequest) { stream.getTracks().forEach((t) => t.stop()); return; }
       acquired = stream;
       stopStream();
       st.stream = stream;
+      const track = stream.getVideoTracks()[0];
+      const settings = track && typeof track.getSettings === 'function' ? track.getSettings() : {};
+      st.mirror = settings.facingMode === 'user';
+      st.deviceId = settings.deviceId || null;
       video.muted = true;
       video.srcObject = stream;
       await new Promise((resolve, reject) => {
@@ -932,6 +1059,7 @@ if (typeof module !== 'undefined') module.exports = WF;
       if (request !== inputRequest) return;
       st.img = null;
       setSource('camera');
+      countCameras();
     } catch (err) {
       if (request !== inputRequest) return;
       if (acquired && st.stream === acquired) stopStream();
@@ -953,13 +1081,170 @@ if (typeof module !== 'undefined') module.exports = WF;
     }
   }
 
+  // 前面 ⇄ 背面を切り替える。向きの指定が効かない端末では、別の deviceId を順に試す
+  async function flipCamera() {
+    if (st.source !== 'camera' || flipBtn.disabled) return;
+    const prevId = st.deviceId, prevFacing = st.facing;
+    flipBtn.disabled = true;
+    try {
+      st.facing = st.facing === 'user' ? 'environment' : 'user';
+      stopStream(); // 2台同時に開けない端末があるため、先に止める
+      await startCamera();
+      if (st.source === 'camera' && st.stream && st.deviceId === prevId && st.cameraIds.length > 1) {
+        const i = Math.max(0, st.cameraIds.indexOf(prevId));
+        stopStream();
+        await startCamera(st.cameraIds[(i + 1) % st.cameraIds.length]);
+      }
+      if (!st.stream) { st.facing = prevFacing; stopStream(); await startCamera(); }
+      if (!st.stream) closeSource();
+      else savePrefs();
+    } finally { flipBtn.disabled = false; }
+  }
+
   function openPicker() { fileIn.click(); }
   fileIn.addEventListener('change', () => {
-    const f = fileIn.files && fileIn.files[0];
-    if (!f) return;
+    const files = Array.from(fileIn.files || []);
     fileIn.value = '';
-    const url = URL.createObjectURL(f);
+    if (files.length) loadFiles(files);
+  });
+
+  // ---- 複数写真の比較 ----
+  const MAX_PHOTOS = 60, THUMB = 320;
+  let photoGen = 0, scoreTimer = 0;
+  const isImage = (f) => (f.type ? f.type.startsWith('image/') : /\.(jpe?g|png|gif|webp|avif|bmp|heic|heif)$/i.test(f.name));
+  function setPhotos(list) {
+    photoGen++;
+    clearTimeout(scoreTimer);
+    st.photos = list; st.photoIdx = list.length ? 0 : -1;
+    strip.replaceChildren();
+    list.forEach((p, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('aria-label', `写真${i + 1}`);
+      const badge = document.createElement('span');
+      badge.className = 'badge'; badge.textContent = '…';
+      b.appendChild(badge);
+      b.addEventListener('click', () => selectPhoto(i));
+      strip.appendChild(b);
+    });
+    updateDeck();
+  }
+  function loadFiles(files) {
+    const imgs = files.filter(isImage).slice(0, MAX_PHOTOS);
+    if (!imgs.length) { showError('画像ファイルを選んでください。'); return; }
+    if (imgs.length === 1) { setPhotos([]); openFile(imgs[0]); return; }
+    setPhotos(imgs.map((file) => ({ file, thumb: null, score: null, broken: false })));
+    selectPhoto(0);
+    decodeThumbs(photoGen);
+  }
+  function openFile(file) {
+    const url = URL.createObjectURL(file);
     loadPhoto(url, () => URL.revokeObjectURL(url));
+  }
+  function selectPhoto(i) {
+    const p = st.photos[i];
+    if (!p) return;
+    st.photoIdx = i;
+    Array.from(strip.children).forEach((b, j) => { if (j === i) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current'); });
+    const b = strip.children[i];
+    if (b && typeof b.scrollIntoView === 'function') b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    openFile(p.file);
+  }
+  function makeThumb(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const s = Math.min(1, THUMB / Math.max(1, img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.naturalWidth * s)); c.height = Math.max(1, Math.round(img.naturalHeight * s));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
+      img.src = url;
+    });
+  }
+  async function decodeThumbs(gen) {
+    for (let i = 0; i < st.photos.length; i++) {
+      if (gen !== photoGen) return;
+      const p = st.photos[i];
+      try { p.thumb = await makeThumb(p.file); } catch (_) { p.broken = true; }
+      if (gen !== photoGen) return;
+      const b = strip.children[i];
+      if (p.thumb && b) b.insertBefore(p.thumb, b.firstChild);
+      scorePhoto(p);
+      paintBadge(i);
+    }
+    paintBest();
+  }
+  function scorePhoto(p) {
+    if (!p.thumb) { p.score = null; return; }
+    try {
+      const smp = sample(p.thumb, p.thumb.width, p.thumb.height);
+      p.score = WF.scoreFor(WF.analyze(smp.data, smp.aw, smp.ah, null), st.mode);
+    } catch (_) { p.score = null; }
+  }
+  function paintBadge(i) {
+    const p = st.photos[i], b = strip.children[i];
+    if (!p || !b) return;
+    b.lastElementChild.textContent = p.broken ? '×' : !p.thumb ? '…' : p.score == null ? '--' : String(p.score);
+    b.setAttribute('aria-label', `写真${i + 1}${p.score == null ? '' : ` 目安${p.score}点`}`);
+  }
+  function paintBest() {
+    let best = -1, bs = -1;
+    st.photos.forEach((p, i) => { if (p.score != null && p.score > bs) { bs = p.score; best = i; } });
+    Array.from(strip.children).forEach((b, i) => b.lastElementChild.classList.toggle('best', i === best));
+  }
+  // モードや比率が変わったら全枚数を採点し直す(UIを止めないよう小分けに)
+  function rescorePhotos() {
+    if (st.photos.length < 2) return;
+    clearTimeout(scoreTimer);
+    const gen = photoGen;
+    st.photos.forEach((p, i) => { p.score = null; paintBadge(i); });
+    let i = 0;
+    const step = () => {
+      if (gen !== photoGen) return;
+      const end = Math.min(st.photos.length, i + 6);
+      for (; i < end; i++) { scorePhoto(st.photos[i]); paintBadge(i); }
+      if (i < st.photos.length) scoreTimer = setTimeout(step, 0);
+      else paintBest();
+    };
+    step();
+  }
+  strip.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || !st.photos.length) return;
+    event.preventDefault();
+    const n = st.photos.length, cur = Math.max(0, st.photoIdx);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? n - 1 : (cur + (event.key === 'ArrowLeft' ? -1 : 1) + n) % n;
+    strip.children[next].focus();
+    selectPhoto(next);
+  });
+
+  // ---- ドラッグ＆ドロップ / 貼り付け ----
+  const hasFiles = (event) => !!(event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files'));
+  for (const type of ['dragenter', 'dragover']) {
+    document.addEventListener(type, (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      document.body.classList.add('dragover');
+    });
+  }
+  document.addEventListener('dragleave', (event) => {
+    if (event.relatedTarget === null || !document.body.contains(event.relatedTarget)) document.body.classList.remove('dragover');
+  });
+  document.addEventListener('drop', (event) => {
+    document.body.classList.remove('dragover');
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    loadFiles(Array.from(event.dataTransfer.files));
+  });
+  document.addEventListener('paste', (event) => {
+    const files = Array.from((event.clipboardData && event.clipboardData.files) || []).filter(isImage);
+    if (!files.length) return;
+    event.preventDefault();
+    loadFiles(files);
   });
 
   function loadPhoto(url, cleanup = () => {}) {
@@ -980,6 +1265,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   }
 
   $('demoBtn').addEventListener('click', () => {
+    setPhotos([]);
     const demo = document.createElement('canvas');
     demo.width = 960; demo.height = 640;
     const ctx = demo.getContext('2d');
@@ -993,7 +1279,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   $('closeBtn').addEventListener('click', closeSource);
 
   // ---- 操作 ----
-  startBtn.addEventListener('click', startCamera);
+  startBtn.addEventListener('click', () => startCamera());
   $('introPhotoBtn').addEventListener('click', openPicker);
   $('photoBtn').addEventListener('click', openPicker);
 
@@ -1002,6 +1288,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     segBtns.forEach((x) => { x.setAttribute('aria-checked', String(x === b)); x.tabIndex = x === b ? 0 : -1; });
     st.okB = st.okT = false; st.tIdx = null;
     evaluate(); updateDeck(); st.dirty = true;
+    savePrefs(); rescorePhotos();
   }));
   segBtns.forEach((b, i) => b.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
@@ -1016,12 +1303,68 @@ if (typeof module !== 'undefined') module.exports = WF;
     resetAnalysis();
     if (st.source === 'photo' || st.paused) analyzeNow(false);
     st.dirty = true;
+    savePrefs(); rescorePhotos();
   });
   mapBtn.addEventListener('click', () => {
     st.showMap = !st.showMap;
     mapBtn.setAttribute('aria-pressed', String(st.showMap));
-    if (st.showMap && st.res) buildMap(st.res);
+    // 静止画は解析し直す(比較採点で解析バッファが上書きされていることがある)
+    if (st.showMap && st.res) { if (st.source === 'photo' || st.paused) analyzeNow(false); else buildMap(st.res); }
     st.dirty = true;
+  });
+
+  // ---- 撮影・保存 ----
+  // 切り抜き枠の中身を、元の解像度のままJPEGにする。スマホでは共有シート(写真に保存)、PCではダウンロード
+  const mobileShare = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
+  let toastTimer = 0;
+  function showToast(msg) {
+    toastEl.textContent = msg; toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1600);
+  }
+  function flash() {
+    if (reduceMotion.matches) return;
+    flashEl.classList.remove('go'); void flashEl.offsetWidth; flashEl.classList.add('go');
+  }
+  async function capture() {
+    const [sw, sh] = srcDims();
+    if (!sw || !sh || shootBtn.disabled) return;
+    const camera = st.source === 'camera';
+    shootBtn.disabled = true;
+    try {
+      const crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r);
+      const out = document.createElement('canvas');
+      out.width = Math.max(1, Math.round(crop.w)); out.height = Math.max(1, Math.round(crop.h));
+      drawSrc(out.getContext('2d'), srcEl(), crop.x, crop.y, crop.w, crop.h, 0, 0, out.width, out.height);
+      if (camera) flash();
+      const blob = await new Promise((resolve) => out.toBlob(resolve, 'image/jpeg', 0.92));
+      if (!blob) throw new Error('encode');
+      const name = `weight-finder_${WF.fileStamp(new Date())}.jpg`;
+      if (mobileShare() && typeof navigator.canShare === 'function' && typeof navigator.share === 'function') {
+        const file = new File([blob], name, { type: 'image/jpeg' });
+        if (navigator.canShare({ files: [file] })) {
+          try { await navigator.share({ files: [file], title: name }); showToast('共有しました'); return; }
+          catch (e) { if (e && e.name === 'AbortError') return; }
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.rel = 'noopener';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      showToast(camera ? '撮影しました' : '保存しました');
+    } catch (_) {
+      showError('画像を書き出せませんでした。');
+    } finally { shootBtn.disabled = false; }
+  }
+  shootBtn.addEventListener('click', capture);
+  flipBtn.addEventListener('click', flipCamera);
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== ' ' || event.repeat || st.source === 'none') return;
+    const t = event.target;
+    if (t && (t.tagName === 'BUTTON' || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    event.preventDefault();
+    capture();
   });
   pauseBtn.addEventListener('click', () => {
     if (st.source === 'photo') { startCamera(); return; }
@@ -1029,7 +1372,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     if (!st.paused) {
       if (!video.videoWidth) return;
       frozen.width = video.videoWidth; frozen.height = video.videoHeight;
-      fctx.drawImage(video, 0, 0);
+      drawSrc(fctx, video, 0, 0, video.videoWidth, video.videoHeight, 0, 0, frozen.width, frozen.height);
       st.paused = true;
       video.hidden = true; still.hidden = false;
       setText(pauseBtn, '再開'); pauseBtn.setAttribute('aria-pressed', 'true');
@@ -1061,7 +1404,13 @@ if (typeof module !== 'undefined') module.exports = WF;
     drawOverlay(live);
   }
   requestAnimationFrame(loop);
+  applyPrefs();
   updateDeck();
+
+  // オフライン起動とホーム画面への追加(https か localhost のときだけ)
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname))) {
+    window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
+  }
 })();
 </script>
 </body>
