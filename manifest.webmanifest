@@ -1,0 +1,17 @@
+{
+  "name": "ウェイトファインダー",
+  "short_name": "ウェイト",
+  "description": "画面の中の重さの偏りを測って、カメラを向け直す方向を出す構図アシスタント。写真・映像は端末内で処理します。",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
