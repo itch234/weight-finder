@@ -215,7 +215,7 @@
           <button class="btn quiet" id="introPhotoBtn" type="button">写真で判定</button>
           <button class="btn quiet" id="demoBtn" type="button">デモで試す</button>
         </div>
-        <p class="note">重さは明るさや色の差、鮮やかさ、細かさから推定しています。上にあるものほど重く感じる補正も入っています。</p>
+        <p class="note">重さは明るさや色の差、鮮やかさ、細かさから推定します。暗いもの、赤に寄った色、まわりが空いているもの、肌色（人物）、画面の上にあるものを重めに見積もります。</p>
         <p class="note">写真・映像はこの端末のブラウザ内で解析し、サーバーへ送信しません。点数は構図の目安で、写真の良し悪しを決めるものではありません。</p>
         <p class="note">写真は複数まとめて選ぶと、点数を並べて見比べられます。パソコンでは画像のドラッグ＆ドロップや貼り付けでも読み込めます。</p>
       </div>
@@ -392,22 +392,62 @@ const WF = (() => {
     let flat = gRef < 7 && cRef < 5 && dRef < 14;
     const gN = 1 / Math.max(gRef, 10), cN = 1 / Math.max(cRef, 8), dN = 1 / Math.max(dRef, 20);
 
+    // 肌色らしさ(顔・人物の近似)。色相と彩度だけで測り、明るさは広いゲートだけにして肌の色調差に左右されにくくする
+    const SK = buf('SK', N);
+    let skinArea = 0;
+    for (let i = 0; i < N; i++) {
+      const l = Lb[i], a = Ab[i], b = Bb[i];
+      const chroma = Math.sqrt(a * a + b * b);
+      let v = 0;
+      if (a >= 6 && b > 0 && chroma >= 12 && chroma <= 55 && l >= 15 && l <= 94) {
+        const hue = Math.atan2(b, a) * 180 / Math.PI;
+        if (hue >= 25 && hue <= 80) {
+          const dh = (hue - 52) / 28, dc = (chroma - 30) / 28;
+          v = 1.25 - 0.85 * Math.sqrt(dh * dh + dc * dc);
+          v = v < 0 ? 0 : v > 1 ? 1 : v;
+        }
+      }
+      SK[i] = v; skinArea += v;
+    }
+    skinArea /= N;
+    // 画面の大半が肌色 → 木肌や夕景などの色被りとみなして効きを落とす
+    const skinGate = skinArea <= 0.35 ? 1 : Math.max(0, (0.55 - skinArea) / 0.2);
+    const SKb = skinGate > 0 ? boxBlur(SK, w, h, Math.max(1, R >> 1), integ, buf('SKb', N)) : null;
+
     const S = buf('S', N);
-    let total = 0, sx = 0, sy = 0, left = 0, top = 0;
-    const hw = w / 2, hh = h / 2;
     for (let y = 0; y < h; y++) {
       const pos = 1 + 0.2 * (0.5 - (y + 0.5) / h); // 上にあるものほど重く感じる補正
-      const row = y * w, fy = y + 0.5;
+      const row = y * w;
       for (let x = 0; x < w; x++) {
         const i = row + x;
         const g = Math.min(1.5, G[i] * gN), c = Math.min(1.5, C[i] * cN), d = Math.min(1.5, D[i] * dN);
         const a = Ab[i], bb = Bb[i];
         const chroma = Math.sqrt(a * a + bb * bb);
-        let warm = (a * 0.57 + bb * 0.82) / 90;
+        let warm = (a * 0.766 + bb * 0.643) / 90; // 赤がもっとも重く、黄に向かうほど軽い
         warm = warm < 0 ? 0 : warm > 1 ? 1 : warm;
         const boost = 1 + Math.min(1, chroma / 80) * (0.25 + 0.35 * warm); // 鮮やかさ・暖色ほど重い
+        const dark = 1 + 0.35 * Math.min(1, Math.max(0, (Lm - Lb[i]) / 45)); // 平均より暗いものほど重い
+        const face = SKb ? 1 + 0.9 * Math.min(1, SKb[i] * 1.2) * skinGate : 1; // 顔・肌は強く注意を引く
         let s = (0.45 * g + 0.35 * c + 0.2 * d) * boost;
-        s = s * Math.sqrt(s) * pos;
+        s = s * Math.sqrt(s) * pos * dark * face;
+        S[i] = s;
+      }
+    }
+
+    // 孤立(まわりが空いているほど重い)。要素そのものの重さ(近傍)と、まわりを含む広い範囲の重さを比べる
+    const rNear = Math.max(2, Math.round(Math.max(w, h) / 14));
+    const rWide = Math.max(rNear + 2, Math.round(Math.max(w, h) / 4));
+    const Snear = boxBlur(S, w, h, rNear, integ, buf('Snear', N));
+    const Swide = boxBlur(S, w, h, rWide, integ, buf('Swide', N));
+    let total = 0, sx = 0, sy = 0, left = 0, top = 0;
+    const hw = w / 2, hh = h / 2;
+    for (let y = 0; y < h; y++) {
+      const row = y * w, fy = y + 0.5;
+      for (let x = 0; x < w; x++) {
+        const i = row + x;
+        const s0 = S[i], near = Snear[i], wide = Swide[i];
+        const iso = (near - wide) / (near + wide + 1e-9);
+        const s = s0 * (1 + 0.5 * (iso > 0 ? (iso > 1 ? 1 : iso) : 0));
         S[i] = s;
         const fx = x + 0.5;
         total += s; sx += s * fx; sy += s * fy;
@@ -416,7 +456,7 @@ const WF = (() => {
       }
     }
     if (!(total > 1e-9)) {
-      return { w, h, flat: true, cx: 0, cy: 0, left: 0.5, top: 0.5, subject: null, map: S, mapRef: 0 };
+      return { w, h, flat: true, cx: 0, cy: 0, left: 0.5, top: 0.5, subject: null, skin: 0, map: S, mapRef: 0 };
     }
     const cx = sx / total / w - 0.5, cy = sy / total / h - 0.5;
 
@@ -462,11 +502,11 @@ const WF = (() => {
         subject = {
           x: ssx / ss / w - 0.5, y: ssy / ss / h - 0.5,
           box: [bx0 / w - 0.5, by0 / h - 0.5, (bx1 + 1) / w - 0.5, (by1 + 1) / h - 0.5],
-          strength,
+          strength, face: SKb ? Math.min(1, SKb[pi] * 1.2) * skinGate : 0,
         };
       }
     }
-    return { w, h, flat, cx, cy, left: left / total, top: top / total, subject, map: S, mapRef: percentile(S, N, 0.98) };
+    return { w, h, flat, cx, cy, left: left / total, top: top / total, subject, skin: skinArea, map: S, mapRef: percentile(S, N, 0.98) };
   }
 
   // ---- 判定と言葉 ----
@@ -481,7 +521,8 @@ const WF = (() => {
     return { dir, amt, mag: m };
   }
 
-  const TOL_X = 0.06, TOL_Y = 0.09;
+  // 縦の許容を横より緩くしない: 好まれた構図では縦方向のずれのほうが小さいという報告がある
+  const TOL_X = 0.07, TOL_Y = 0.07;
   function evalBalance(cx, cy, wasOk) {
     const d = Math.hypot(cx / TOL_X, cy / TOL_Y);
     const ok = wasOk ? d < 1.2 : d < 0.9;
