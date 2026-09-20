@@ -1,6 +1,6 @@
 // Optional browser checks: install Playwright (or playwright-core) and provide an existing browser.
-let chromium;
-try { ({ chromium } = require('playwright')); } catch (_) { ({ chromium } = require('playwright-core')); }
+let playwright;
+try { playwright = require('playwright'); } catch (_) { playwright = require('playwright-core'); }
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -22,11 +22,13 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   let browser;
   try {
-    browser = await chromium.launch({ headless: true,
+    browser = await playwright[process.env.BROWSER_ENGINE || 'chromium'].launch({ headless: true,
       ...(process.env.BROWSER_PATH ? { executablePath: process.env.BROWSER_PATH } : {}) });
+    const errors = [];
+    const base = `http://127.0.0.1:${server.address().port}`;
+    if (!process.argv.includes('--touch-only')) {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
     const page = await context.newPage();
-    const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.route('https://fonts.googleapis.com/**', route => route.abort());
     await page.addInitScript(() => {
@@ -52,7 +54,6 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
         window.resolveCamera = () => resolve(window.makeStream());
       });
     });
-    const base = `http://127.0.0.1:${server.address().port}`;
     await page.goto(base);
     await page.locator('#demoBtn').click();
     await page.waitForFunction(() => !document.body.classList.contains('no-source'));
@@ -221,7 +222,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
     await page.waitForFunction(() => document.querySelector('#strip button:last-child').textContent === '--');
     assert.equal(await page.locator('#strip button').first().innerText(), manualScore);
     await page.locator('#strip button').last().click();
-    await page.waitForFunction(() => document.getElementById('autoSubjectBtn').hidden);
+    await page.waitForFunction(() => document.getElementById('autoSubjectBtn').disabled);
     assert.equal(await page.locator('#score').innerText(), '--');
     await page.locator('#strip button').first().click();
     await page.waitForFunction(score => document.getElementById('score').textContent === score, manualScore);
@@ -234,7 +235,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
     assert.match(await page.locator('#score').innerText(), /^\d+$/);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#score').innerText(), '--');
-    assert.ok(await page.locator('#autoSubjectBtn').isHidden());
+    assert.ok(await page.locator('#autoSubjectBtn').isDisabled());
     // Transparent input is flattened to the same white in preview, analysis and JPEG.
     const [whiteDownload] = await Promise.all([page.waitForEvent('download'), page.locator('#shootBtn').click()]);
     const whitePath = path.join(output, 'transparent-white.jpg');
@@ -260,6 +261,48 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
     await page.screenshot({ path: path.join(output, 'manual-subject.png') });
     assert.deepEqual(errors, []);
     console.log('Browser checks passed: demo, responsive layout, modes, save/download, preferences, invalid images, photo comparison, drag & drop, camera denial, input races, flip/mirror, pause/resume, track cleanup.');
+    }
+    // Touch input and layout stability on a small iPhone-sized viewport.
+    const touchContext = await browser.newContext({ viewport: { width: 375, height: 667 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    const touchPage = await touchContext.newPage();
+    touchPage.on('pageerror', error => errors.push(error.message));
+    await touchPage.route('https://fonts.googleapis.com/**', route => route.abort());
+    await touchPage.goto(base);
+    await touchPage.locator('#demoBtn').tap();
+    await touchPage.locator('[data-mode="thirds"]').tap();
+    const touchFrame = touchPage.locator('#frame');
+    // A touch must work even if Safari never synthesizes a click on the canvas.
+    await touchFrame.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      const init = { bubbles: true, pointerId: 7, pointerType: 'touch', isPrimary: true, button: 0, clientX: r.left + r.width / 3, clientY: r.top + r.height / 3 };
+      el.dispatchEvent(new PointerEvent('pointerdown', init));
+      el.dispatchEvent(new PointerEvent('pointerup', init));
+    });
+    assert.match(await touchPage.locator('#status').innerText(), /手動指定/);
+    await touchPage.locator('#autoSubjectBtn').tap();
+    const beforeTap = await touchFrame.boundingBox();
+    await touchFrame.tap({ position: { x: beforeTap.width * 2 / 3, y: beforeTap.height / 3 } });
+    await touchPage.waitForFunction(() => document.getElementById('status').textContent.includes('手動指定'));
+    const afterTap = await touchFrame.boundingBox();
+    assert.ok(Math.abs(beforeTap.height - afterTap.height) < 2, 'specifying a subject must not shrink the photo under the finger');
+    assert.ok(Number(await touchPage.locator('#score').innerText()) >= 98);
+    await touchPage.locator('#autoSubjectBtn').tap();
+    assert.ok(!await touchPage.locator('#status').innerText().then(t => t.includes('手動指定')));
+    for (const type of ['pointercancel', 'pointermove']) {
+      await touchFrame.evaluate((el, type) => {
+        const r = el.getBoundingClientRect();
+        const init = { bubbles: true, pointerId: 8, pointerType: 'touch', isPrimary: true, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+        el.dispatchEvent(new PointerEvent('pointerdown', init));
+        el.dispatchEvent(new PointerEvent(type, { ...init, clientX: init.clientX + 30 }));
+        el.dispatchEvent(new PointerEvent('pointerup', init));
+        el.dispatchEvent(new MouseEvent('click', { ...init, detail: 1 }));
+      }, type);
+      assert.ok(await touchPage.locator('#autoSubjectBtn').isDisabled(), `${type} must not select a subject`);
+    }
+    await touchPage.screenshot({ path: path.join(output, 'iphone-touch.png') });
+    await touchContext.close();
+    assert.deepEqual(errors, []);
+    console.log('Touch checks passed: direct pointer input, real taps, reset, stable layout, canceled gestures.');
   } finally {
     if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));
