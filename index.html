@@ -84,7 +84,8 @@
   /* ファインダー */
   .vf { position: relative; background: var(--vf); min-height: 0; min-width: 0; display: grid; place-items: center; overflow: hidden; }
   .frame { position: relative; }
-  .frame.selectable { cursor: crosshair; }
+  .frame.selectable { cursor: crosshair; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+  .frame.selectable > canvas { pointer-events: none; }
   .frame:focus-visible { outline: 2px solid var(--marker); outline-offset: 2px; }
   .subject-help { font-size: 12px; color: var(--ink-2); margin: 8px 0; }
   .frame > video, .frame > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -824,7 +825,8 @@ if (typeof module !== 'undefined') module.exports = WF;
     const selectable = st.source === 'photo' && st.mode === 'thirds';
     $('subjectHelp').hidden = !selectable;
     setText($('subjectHelp'), `${st.manualSubject ? '主役は手動指定中です。' : '主役は自動推定です。'}写真をタップして指定できます。Tabで写真へ移動・矢印キーで指定・Escapeで解除。点数は交点への近さの目安です。`);
-    $('autoSubjectBtn').hidden = !selectable || !st.manualSubject;
+    $('autoSubjectBtn').hidden = !selectable;
+    $('autoSubjectBtn').disabled = !st.manualSubject;
     frame.classList.toggle('selectable', selectable);
     frame.tabIndex = selectable ? 0 : -1;
     frame.setAttribute('role', 'group');
@@ -1373,12 +1375,34 @@ if (typeof module !== 'undefined') module.exports = WF;
     st.tIdx = null; st.okT = false; st.disp = null;
     evaluate(); updateDeck(); st.dirty = true;
   }
-  frame.addEventListener('click', (event) => {
+  function selectSubjectAt(clientX, clientY) {
     if (st.source !== 'photo' || st.mode !== 'thirds') return;
     const bounds = frame.getBoundingClientRect();
-    const point = { x: (event.clientX - bounds.left) / bounds.width, y: (event.clientY - bounds.top) / bounds.height };
+    if (!bounds.width || !bounds.height) return;
+    const point = { x: (clientX - bounds.left) / bounds.width, y: (clientY - bounds.top) / bounds.height };
     const [sw, sh] = srcDims();
     if (WF.subjectInCrop(point, sw, sh, RATIOS[st.ratio].r)) chooseSubject(point);
+  }
+  // iOSの合成clickに依存しない。スクロール・ピンチ・中断した操作は指定しない。
+  let subjectTap = null;
+  frame.addEventListener('pointerdown', (event) => {
+    if (!event.isPrimary) { subjectTap = null; return; }
+    if (event.button !== 0 || st.source !== 'photo' || st.mode !== 'thirds') return;
+    subjectTap = { id: event.pointerId, x: event.clientX, y: event.clientY, input: inputRequest };
+  });
+  frame.addEventListener('pointermove', (event) => {
+    if (subjectTap && event.pointerId === subjectTap.id && Math.hypot(event.clientX - subjectTap.x, event.clientY - subjectTap.y) > 12) subjectTap = null;
+  });
+  frame.addEventListener('pointercancel', () => { subjectTap = null; });
+  frame.addEventListener('pointerleave', () => { subjectTap = null; });
+  frame.addEventListener('pointerup', (event) => {
+    const tap = subjectTap; subjectTap = null;
+    if (!tap || event.pointerId !== tap.id || tap.input !== inputRequest) return;
+    if (Math.hypot(event.clientX - tap.x, event.clientY - tap.y) <= 12) selectSubjectAt(event.clientX, event.clientY);
+  });
+  frame.addEventListener('click', (event) => {
+    // Pointer Events非対応ブラウザと支援技術のclickだけを扱い、二重指定を防ぐ。
+    if (!window.PointerEvent || event.detail === 0) selectSubjectAt(event.clientX, event.clientY);
   });
   frame.addEventListener('keydown', (event) => {
     if (st.source !== 'photo' || st.mode !== 'thirds') return;
