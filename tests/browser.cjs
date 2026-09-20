@@ -202,6 +202,63 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
     assert.ok(await page.locator('#frame').isVisible(), 'camera without frames preserves the photo');
     assert.equal(await page.locator('#pauseBtn').isDisabled(), false);
     assert.deepEqual(errors, []);
+    // Manual subjects work even on a uniform image, survive crops, and reset explicitly.
+    await page.locator('[data-mode="thirds"]').click();
+    while (await page.locator('#ratioVal').innerText() !== 'フル') await page.locator('#ratioBtn').click();
+    const transparent = await page.evaluate(() => {
+      const c = document.createElement('canvas'); c.width = 600; c.height = 400;
+      return c.toDataURL('image/png').split(',')[1];
+    });
+    const clearFile = { name: 'transparent.png', mimeType: 'image/png', buffer: Buffer.from(transparent, 'base64') };
+    await page.locator('#fileIn').setInputFiles([clearFile, { ...clearFile, name: 'second.png' }]);
+    await page.waitForFunction(() => document.getElementById('score').textContent === '--');
+    const preview = page.locator('#frame');
+    const rect = await preview.boundingBox();
+    await preview.click({ position: { x: rect.width * 2 / 3, y: rect.height / 3 } });
+    const manualScore = await page.locator('#score').innerText();
+    assert.ok(Number(manualScore) >= 98, 'tap coordinates may round to display pixels');
+    assert.match(await page.locator('#status').innerText(), /手動指定/);
+    await page.waitForFunction(() => document.querySelector('#strip button:last-child').textContent === '--');
+    assert.equal(await page.locator('#strip button').first().innerText(), manualScore);
+    await page.locator('#strip button').last().click();
+    await page.waitForFunction(() => document.getElementById('autoSubjectBtn').hidden);
+    assert.equal(await page.locator('#score').innerText(), '--');
+    await page.locator('#strip button').first().click();
+    await page.waitForFunction(score => document.getElementById('score').textContent === score, manualScore);
+    const newRect = await preview.boundingBox();
+    await preview.click({ position: { x: newRect.width * 0.05, y: newRect.height / 2 } });
+    while (await page.locator('#ratioVal').innerText() !== '1:1') await page.locator('#ratioBtn').click();
+    assert.equal(await page.locator('#score').innerText(), '--');
+    assert.match(await page.locator('#status').innerText(), /枠外/);
+    await preview.focus(); await page.keyboard.press('ArrowRight');
+    assert.match(await page.locator('#score').innerText(), /^\d+$/);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#score').innerText(), '--');
+    assert.ok(await page.locator('#autoSubjectBtn').isHidden());
+    // Transparent input is flattened to the same white in preview, analysis and JPEG.
+    const [whiteDownload] = await Promise.all([page.waitForEvent('download'), page.locator('#shootBtn').click()]);
+    const whitePath = path.join(output, 'transparent-white.jpg');
+    await whiteDownload.saveAs(whitePath);
+    const whiteJpeg = fs.readFileSync(whitePath).toString('base64');
+    const rgb = await page.evaluate(async (data) => {
+      const img = new Image(); img.src = 'data:image/jpeg;base64,' + data; await img.decode();
+      const c = document.createElement('canvas'); c.width = c.height = 1;
+      c.getContext('2d').drawImage(img, 0, 0, 1, 1);
+      return Array.from(c.getContext('2d').getImageData(0, 0, 1, 1).data);
+    }, whiteJpeg);
+    assert.ok(rgb.slice(0, 3).every(v => v >= 254));
+    await page.locator('#closeBtn').click();
+    await page.locator('#demoBtn').click();
+    await page.waitForFunction(() => !document.body.classList.contains('no-source'));
+    await preview.focus(); await page.keyboard.press('ArrowRight');
+    for (const size of [{ width: 320, height: 568 }, { width: 844, height: 390 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(size);
+      const bounds = await preview.boundingBox();
+      assert.ok(bounds.width > 10 && bounds.height > 10, 'manual controls leave room for the photo');
+      assert.ok(await page.locator('#autoSubjectBtn').isVisible());
+    }
+    await page.screenshot({ path: path.join(output, 'manual-subject.png') });
+    assert.deepEqual(errors, []);
     console.log('Browser checks passed: demo, responsive layout, modes, save/download, preferences, invalid images, photo comparison, drag & drop, camera denial, input races, flip/mirror, pause/resume, track cleanup.');
   } finally {
     if (browser) await browser.close();

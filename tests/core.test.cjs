@@ -83,6 +83,18 @@ test('file stamp uses local time and zero padding', () => {
   assert.equal(WF.fileStamp(new Date(2026, 11, 31, 23, 59, 59)), '20261231_235959');
 });
 
+test('manual subject keeps its original-image position across crops and excludes cropped-out points', () => {
+  const point = { x: 2 / 3, y: 1 / 3 };
+  const full = WF.subjectInCrop(point, 1200, 800, null);
+  assert.equal(WF.evalThirds(full, null, false).score, 100);
+  const square = WF.subjectInCrop(point, 1200, 800, 1);
+  assert.ok(Math.abs(square.x - 0.25) < 1e-9);
+  assert.ok(Math.abs(square.y + 1 / 6) < 1e-9);
+  assert.equal(WF.subjectInCrop({ x: 0.05, y: 0.5 }, 1200, 800, 1), null);
+  assert.equal(WF.subjectInCrop({ x: 0.5, y: 0.05 }, 800, 1200, 1), null);
+  assert.equal(WF.subjectInCrop({ x: NaN, y: 0.5 }, 800, 1200, 1), null);
+});
+
 // ---- ビジュアルウェイト理論の各要因が実際に効いているかの検証 ----
 // 比較用の色は CIE Lab で作り、明度・彩度をそろえたうえで一つの要因だけを変える。
 const finv = (t) => (t * t * t > 0.008856 ? t * t * t : (t - 16 / 116) / 7.787);
