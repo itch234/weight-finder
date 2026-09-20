@@ -84,6 +84,9 @@
   /* ファインダー */
   .vf { position: relative; background: var(--vf); min-height: 0; min-width: 0; display: grid; place-items: center; overflow: hidden; }
   .frame { position: relative; }
+  .frame.selectable { cursor: crosshair; }
+  .frame:focus-visible { outline: 2px solid var(--marker); outline-offset: 2px; }
+  .subject-help { font-size: 12px; color: var(--ink-2); margin: 8px 0; }
   .frame > video, .frame > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .frame > video { object-fit: cover; }
 
@@ -215,7 +218,7 @@
           <button class="btn quiet" id="introPhotoBtn" type="button">写真で判定</button>
           <button class="btn quiet" id="demoBtn" type="button">デモで試す</button>
         </div>
-        <p class="note">重さは明るさや色の差、鮮やかさ、細かさから推定します。暗いもの、赤に寄った色、まわりが空いているもの、肌色（人物）、画面の上にあるものを重めに見積もります。</p>
+        <p class="note">重さは明るさや色の差、鮮やかさ、細かさから推定します。肌色の補正は顔検出ではなく、木肌や砂なども重く見積もることがあります。係数は独自の目安です。</p>
         <p class="note">写真・映像はこの端末のブラウザ内で解析し、サーバーへ送信しません。点数は構図の目安で、写真の良し悪しを決めるものではありません。</p>
         <p class="note">写真は複数まとめて選ぶと、点数を並べて見比べられます。パソコンでは画像のドラッグ＆ドロップや貼り付けでも読み込めます。</p>
       </div>
@@ -233,6 +236,7 @@
         </div>
       </div>
       <p class="error" id="error" role="alert" hidden></p>
+      <p class="subject-help" id="subjectHelp" hidden>主役は自動推定です。写真をタップして指定できます。キーボードでは写真にTabで移動し、矢印キーで指定・Escapeで解除。</p>
 
       <div class="scale" aria-hidden="true">
         <span class="side">左<span class="num" id="pL">--</span></span>
@@ -257,6 +261,7 @@
         <button class="ctl" id="mapBtn" type="button" aria-pressed="false">重さマップ</button>
         <button class="ctl" id="pauseBtn" type="button" aria-pressed="false" disabled>一時停止</button>
         <button class="ctl" id="photoBtn" type="button">写真で判定</button>
+        <button class="ctl" id="autoSubjectBtn" type="button" aria-label="主役を自動に戻す" hidden>主役を自動へ</button>
         <div class="shoot-row solo" id="shootRow">
           <button class="ctl shoot" id="shootBtn" type="button">撮影</button>
           <button class="ctl" id="flipBtn" type="button" hidden>カメラ切替</button>
@@ -557,6 +562,16 @@ const WF = (() => {
     return { x: 0, y: (sh - ch) / 2, w: sw, h: ch };
   }
 
+  // 手動の主役は元画像に対する0..1座標で保持し、切り抜き枠に変換する。
+  function subjectInCrop(point, sw, sh, ratio) {
+    if (!point) return null;
+    const crop = cropRect(sw, sh, ratio);
+    const x = (point.x * sw - crop.x) / crop.w - 0.5;
+    const y = (point.y * sh - crop.y) / crop.h - 0.5;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 0.5 || Math.abs(y) > 0.5) return null;
+    return { x, y, box: [x - 0.02, y - 0.02, x + 0.02, y + 0.02], strength: 1 };
+  }
+
   // 一覧比較用: 解析結果からモードごとの点数を出す(判定できないときは null)
   function scoreFor(res, mode) {
     if (!res || res.flat) return null;
@@ -570,7 +585,7 @@ const WF = (() => {
     return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   }
 
-  return { analyze, direction, evalBalance, evalThirds, cropRect, scoreFor, fileStamp, THIRDS, TOL_X, TOL_Y };
+  return { analyze, direction, evalBalance, evalThirds, cropRect, subjectInCrop, scoreFor, fileStamp, THIRDS, TOL_X, TOL_Y };
 })();
 if (typeof module !== 'undefined') module.exports = WF;
 </script>
@@ -614,6 +629,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     fw: 0, fh: 0, dpr: 1, mapReady: false, dirty: true,
     facing: 'environment', mirror: false, cameraIds: [], deviceId: null, wasOk: false,
     photos: [], photoIdx: -1,
+    manualSubject: null, photoEntry: null,
   };
 
   const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
@@ -684,7 +700,8 @@ if (typeof module !== 'undefined') module.exports = WF;
     sctx.setTransform(1, 0, 0, 1, 0, 0);
     sctx.imageSmoothingEnabled = true;
     sctx.imageSmoothingQuality = 'high';
-    sctx.clearRect(0, 0, still.width, still.height);
+    sctx.fillStyle = '#ffffff';
+    sctx.fillRect(0, 0, still.width, still.height);
     sctx.drawImage(el, 0, 0, still.width, still.height);
   }
 
@@ -697,6 +714,8 @@ if (typeof module !== 'undefined') module.exports = WF;
     if (crop.w >= crop.h) { aw = LONG; ah = Math.max(8, Math.round(LONG * crop.h / crop.w)); }
     else { ah = LONG; aw = Math.max(8, Math.round(LONG * crop.w / crop.h)); }
     if (acan.width !== aw || acan.height !== ah) { acan.width = aw; acan.height = ah; }
+    actx.fillStyle = '#ffffff';
+    actx.fillRect(0, 0, aw, ah);
     drawSrc(actx, el, crop.x, crop.y, crop.w, crop.h, 0, 0, aw, ah);
     return { data: actx.getImageData(0, 0, aw, ah).data, aw, ah };
   }
@@ -711,7 +730,7 @@ if (typeof module !== 'undefined') module.exports = WF;
       showError('画像を読み取れませんでした。別の写真で試してください。');
       return;
     }
-    const hint = st.ema && st.ema.sub ? st.ema.sub : null;
+    const hint = live && st.ema && st.ema.sub ? st.ema.sub : null;
     const res = WF.analyze(smp.data, smp.aw, smp.ah, hint);
     st.res = res;
 
@@ -756,16 +775,18 @@ if (typeof module !== 'undefined') module.exports = WF;
   function evaluate() {
     const e = st.ema;
     if (!e || !st.res) { st.evl = null; return; }
-    if (st.flatShown) { st.evl = { kind: 'flat' }; st.okB = st.okT = false; return; }
+    if (st.flatShown && !(st.mode === 'thirds' && st.manualSubject)) { st.evl = { kind: 'flat' }; st.okB = st.okT = false; return; }
+    const [sw, sh] = srcDims();
+    const sub = st.manualSubject ? WF.subjectInCrop(st.manualSubject, sw, sh, RATIOS[st.ratio].r) : e.sub;
     if (st.mode === 'balance') {
       const ev = WF.evalBalance(e.cx, e.cy, st.okB);
       st.okB = ev.ok;
       st.evl = { kind: 'balance', ok: ev.ok, dx: e.cx, dy: e.cy, score: ev.score };
-    } else if (!e.sub) {
+    } else if (!sub) {
       st.okT = false;
       st.evl = { kind: 'nosubject' };
     } else {
-      const ev = WF.evalThirds(e.sub, st.tIdx, st.okT);
+      const ev = WF.evalThirds(sub, st.tIdx, st.okT);
       st.tIdx = ev.idx; st.okT = ev.ok;
       st.evl = { kind: 'thirds', ok: ev.ok, dx: ev.dx, dy: ev.dy, idx: ev.idx, name: ev.name, score: ev.score };
     }
@@ -782,7 +803,7 @@ if (typeof module !== 'undefined') module.exports = WF;
         status = '重さの偏りを判定できません';
       } else if (ev.kind === 'nosubject') {
         instr = '主役が見つかりません';
-        status = 'はっきり目立つものを画面に入れてください';
+        status = st.manualSubject ? '指定した主役が枠外です。比率を戻すか、枠内をタップしてください' : 'はっきり目立つものを画面に入れてください';
       } else {
         score = String(ev.score);
         const d = WF.direction(ev.dx, ev.dy);
@@ -800,8 +821,17 @@ if (typeof module !== 'undefined') module.exports = WF;
     instrEl.classList.toggle('ok', ok);
     setText(statusEl, status);
     setText(scoreEl, score);
+    const selectable = st.source === 'photo' && st.mode === 'thirds';
+    $('subjectHelp').hidden = !selectable;
+    setText($('subjectHelp'), `${st.manualSubject ? '主役は手動指定中です。' : '主役は自動推定です。'}写真をタップして指定できます。Tabで写真へ移動・矢印キーで指定・Escapeで解除。点数は交点への近さの目安です。`);
+    $('autoSubjectBtn').hidden = !selectable || !st.manualSubject;
+    frame.classList.toggle('selectable', selectable);
+    frame.tabIndex = selectable ? 0 : -1;
+    frame.setAttribute('role', 'group');
+    frame.setAttribute('aria-label', selectable ? '写真の主役を指定。矢印キーで移動、Escapeで自動に戻す' : '構図プレビュー');
+    if (selectable && st.manualSubject) setText(statusEl, `${status}（手動指定）`);
 
-    const valid = e && ev && ev.kind !== 'flat';
+    const valid = e && ev && !st.flatShown;
     const left = valid ? e.left : 0.5, top = valid ? e.top : 0.5;
     const l = Math.round(left * 100), t = Math.round(top * 100);
     setText(pL, valid ? String(l) : '--'); setText(pR, valid ? String(100 - l) : '--');
@@ -840,7 +870,8 @@ if (typeof module !== 'undefined') module.exports = WF;
   function drawOverlay(live) {
     const W = st.fw, H = st.fh;
     if (!W || st.source === 'none') return;
-    const e = st.ema;
+    const [sourceW, sourceH] = srcDims();
+    const e = st.ema && st.manualSubject ? { ...st.ema, sub: WF.subjectInCrop(st.manualSubject, sourceW, sourceH, RATIOS[st.ratio].r) } : st.ema;
     const lerpA = reduceMotion.matches ? 1 : 0.35;
     let moving = false;
     if (e) {
@@ -1001,6 +1032,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   }
   function setSource(s) {
     st.source = s; st.paused = false;
+    if (s !== 'photo') { st.manualSubject = null; st.photoEntry = null; }
     resetAnalysis();
     intro.hidden = true;
     frame.classList.toggle('mirror', s === 'camera' && st.mirror);
@@ -1032,6 +1064,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     beginInput();
     stopStream();
     st.img = null; st.source = 'none'; st.paused = false; st.mirror = false;
+    st.manualSubject = null; st.photoEntry = null;
     setPhotos([]);
     resetAnalysis();
     frame.hidden = true; intro.hidden = false;
@@ -1178,9 +1211,9 @@ if (typeof module !== 'undefined') module.exports = WF;
     selectPhoto(0);
     decodeThumbs(photoGen);
   }
-  function openFile(file) {
+  function openFile(file, entry = null) {
     const url = URL.createObjectURL(file);
-    loadPhoto(url, () => URL.revokeObjectURL(url));
+    loadPhoto(url, () => URL.revokeObjectURL(url), entry);
   }
   function selectPhoto(i) {
     const p = st.photos[i];
@@ -1189,7 +1222,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     Array.from(strip.children).forEach((b, j) => { if (j === i) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current'); });
     const b = strip.children[i];
     if (b && typeof b.scrollIntoView === 'function') b.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    openFile(p.file);
+    openFile(p.file, p);
   }
   function makeThumb(file) {
     return new Promise((resolve, reject) => {
@@ -1199,7 +1232,11 @@ if (typeof module !== 'undefined') module.exports = WF;
         const s = Math.min(1, THUMB / Math.max(1, img.naturalWidth, img.naturalHeight));
         const c = document.createElement('canvas');
         c.width = Math.max(1, Math.round(img.naturalWidth * s)); c.height = Math.max(1, Math.round(img.naturalHeight * s));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(img, 0, 0, c.width, c.height);
+        // 元画像の比率で手動位置を変換する（サムネイルの丸め誤差を避ける）。
+        c.sourceWidth = img.naturalWidth; c.sourceHeight = img.naturalHeight;
         resolve(c);
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
@@ -1222,6 +1259,11 @@ if (typeof module !== 'undefined') module.exports = WF;
   function scorePhoto(p) {
     if (!p.thumb) { p.score = null; return; }
     try {
+      if (st.mode === 'thirds' && p.manualSubject) {
+        const sub = WF.subjectInCrop(p.manualSubject, p.thumb.sourceWidth, p.thumb.sourceHeight, RATIOS[st.ratio].r);
+        p.score = sub ? WF.evalThirds(sub, null, false).score : null;
+        return;
+      }
       const smp = sample(p.thumb, p.thumb.width, p.thumb.height);
       p.score = WF.scoreFor(WF.analyze(smp.data, smp.aw, smp.ah, null), st.mode);
     } catch (_) { p.score = null; }
@@ -1288,7 +1330,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     loadFiles(files);
   });
 
-  function loadPhoto(url, cleanup = () => {}) {
+  function loadPhoto(url, cleanup = () => {}, entry = null) {
     const request = beginInput();
     // Cancel a camera that is still starting, while retaining the current photo.
     if (st.source !== 'camera') stopStream();
@@ -1296,7 +1338,9 @@ if (typeof module !== 'undefined') module.exports = WF;
     img.onload = () => {
       cleanup();
       if (request !== inputRequest) return;
-      stopStream(); st.img = img; setSource('photo');
+      stopStream(); st.img = img;
+      st.photoEntry = entry; st.manualSubject = entry ? entry.manualSubject || null : null;
+      setSource('photo');
     };
     img.onerror = () => {
       cleanup();
@@ -1320,6 +1364,36 @@ if (typeof module !== 'undefined') module.exports = WF;
   $('closeBtn').addEventListener('click', closeSource);
 
   // ---- 操作 ----
+  function chooseSubject(point) {
+    st.manualSubject = point;
+    if (st.photoEntry) {
+      st.photoEntry.manualSubject = point;
+      scorePhoto(st.photoEntry); paintBadge(st.photos.indexOf(st.photoEntry)); paintBest();
+    }
+    st.tIdx = null; st.okT = false; st.disp = null;
+    evaluate(); updateDeck(); st.dirty = true;
+  }
+  frame.addEventListener('click', (event) => {
+    if (st.source !== 'photo' || st.mode !== 'thirds') return;
+    const bounds = frame.getBoundingClientRect();
+    const point = { x: (event.clientX - bounds.left) / bounds.width, y: (event.clientY - bounds.top) / bounds.height };
+    const [sw, sh] = srcDims();
+    if (WF.subjectInCrop(point, sw, sh, RATIOS[st.ratio].r)) chooseSubject(point);
+  });
+  frame.addEventListener('keydown', (event) => {
+    if (st.source !== 'photo' || st.mode !== 'thirds') return;
+    if (event.key === 'Escape') { event.preventDefault(); chooseSubject(null); return; }
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    const [sw, sh] = srcDims(), crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r);
+    const point = { ...(st.manualSubject || { x: 0.5, y: 0.5 }) }, step = event.shiftKey ? 0.05 : 0.01;
+    point.x += event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+    point.y += event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+    point.x = Math.max(crop.x / sw, Math.min((crop.x + crop.w) / sw, point.x));
+    point.y = Math.max(crop.y / sh, Math.min((crop.y + crop.h) / sh, point.y));
+    chooseSubject(point);
+  });
+  $('autoSubjectBtn').addEventListener('click', () => chooseSubject(null));
   startBtn.addEventListener('click', () => startCamera());
   $('introPhotoBtn').addEventListener('click', openPicker);
   $('photoBtn').addEventListener('click', openPicker);
@@ -1376,7 +1450,9 @@ if (typeof module !== 'undefined') module.exports = WF;
       const crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r);
       const out = document.createElement('canvas');
       out.width = Math.max(1, Math.round(crop.w)); out.height = Math.max(1, Math.round(crop.h));
-      drawSrc(out.getContext('2d'), srcEl(), crop.x, crop.y, crop.w, crop.h, 0, 0, out.width, out.height);
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, out.width, out.height);
+      drawSrc(ctx, srcEl(), crop.x, crop.y, crop.w, crop.h, 0, 0, out.width, out.height);
       if (camera) flash();
       const blob = await new Promise((resolve) => out.toBlob(resolve, 'image/jpeg', 0.92));
       if (!blob) throw new Error('encode');
