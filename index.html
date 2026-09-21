@@ -88,6 +88,17 @@
   .frame.selectable > canvas { pointer-events: none; }
   .frame:focus-visible { outline: 2px solid var(--marker); outline-offset: 2px; }
   .subject-help { font-size: 12px; color: var(--ink-2); margin: 8px 0; }
+  .lens-note { position: absolute; top: 8px; left: 8px; right: 8px; margin: 0; padding: 6px 8px; border-radius: 8px; background: rgba(0,0,0,.72); color: #fff; font-size: 12px; pointer-events: none; }
+  .lens-dialog { width: min(440px, calc(100% - 24px)); max-height: 85dvh; overflow: auto; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); color: var(--ink); padding: 20px; }
+  .lens-dialog::backdrop { background: rgba(0,0,0,.65); }
+  .lens-dialog h2 { margin: 0 0 14px; font-size: 20px; }
+  .lens-dialog label { display: grid; gap: 6px; margin: 14px 0; }
+  .lens-dialog select, .lens-dialog input { width: 100%; min-height: 44px; font: inherit; font-size: 16px; padding: 8px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+  .lens-dialog p { font-size: 13px; line-height: 1.65; }
+  .lens-dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .lens-dialog .presets .btn { font-size: 13px; padding: 0 10px; }
+  .lens-dialog summary { cursor: pointer; min-height: 36px; font-size: 13px; }
+  .lens-dialog .footer { position: sticky; bottom: -20px; padding: 12px 0; background: var(--surface); }
   .frame > video, .frame > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .frame > video { object-fit: cover; }
 
@@ -200,6 +211,7 @@
       <div class="flash" id="flash" aria-hidden="true"></div>
     </div>
     <div class="strip" id="strip" role="group" aria-label="読み込んだ写真" hidden></div>
+    <p class="lens-note" id="lensNote" role="status" hidden></p>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div class="drop-hint" aria-hidden="true">画像をドロップして判定</div>
     <div class="intro" id="intro">
@@ -262,6 +274,7 @@
         <button class="ctl" id="mapBtn" type="button" aria-pressed="false">重さマップ</button>
         <button class="ctl" id="pauseBtn" type="button" aria-pressed="false" disabled>一時停止</button>
         <button class="ctl" id="photoBtn" type="button">写真で判定</button>
+        <button class="ctl" id="lensBtn" type="button" aria-label="ZV-E10のレンズ画角を設定">画角: 通常</button>
         <button class="ctl" id="autoSubjectBtn" type="button" aria-label="主役を自動に戻す" hidden>主役を自動へ</button>
         <div class="shoot-row solo" id="shootRow">
           <button class="ctl shoot" id="shootBtn" type="button">撮影</button>
@@ -271,6 +284,30 @@
       <input class="visually-hidden" id="fileIn" type="file" accept="image/*" multiple tabindex="-1" aria-hidden="true">
     </section>
   </div>
+
+  <dialog id="lensDialog" class="lens-dialog" aria-labelledby="lensTitle">
+    <form id="lensForm">
+      <h2 id="lensTitle">ZV-E10のレンズ画角</h2>
+      <label>レンズ<select id="lensSelect">
+        <option value="0">通常（スマホ映像全体）</option>
+        <option value="16">SIGMA 16mm F1.4</option>
+        <option value="24">SONY ZEISS 24mm F1.8</option>
+        <option value="50">TTArtisan 50mm F1.8</option>
+        <option value="85">VILTROX 85mm</option>
+      </select></label>
+      <label>スマホのカメラ<select id="lensCamera"><option value="">現在のカメラ</option></select></label>
+      <label>スマホ映像の長辺画角（度）<input id="phoneFov" type="number" inputmode="decimal" min="30" max="120" step="0.1" value="67.3" required></label>
+      <div class="actions presets"><button class="btn" id="mainFov" type="button">iPhone 14・1×の仮値</button><button class="btn" id="wideFov" type="button">0.5×の仮値</button></div>
+      <p>初回は実機で枠を合わせてください。16mmは超広角が必要な場合があります。読み込んだ写真には適用しません。</p>
+      <details><summary>画角の合わせ方・注意点</summary>
+      <p>初期値67.3°はiPhone 14の1×・4:3映像を仮定した値です。プリセットは画角の数値だけを変更します。0.5×は上のカメラ欄で超広角を選んでください（選べるカメラはブラウザによります）。</p>
+      <p>ブラウザは映像の正確な画角を取得できないため、初回は実機で枠を合わせてください。横持ちでは左右、縦持ちでは上下の画角を指定します。</p>
+      <p>合わせ方：同じ位置からZV-E10とスマホで遠くの景色を見て、同じレンズを選択。ZV-E10に写る範囲と枠が一致するよう数値を調整します。数値を大きくすると枠は小さくなります。スマホのカメラ・ズーム・縦横を変えたときは再確認してください。</p>
+      <p>静止画の画角の目安です。枠内だけを判定・保存します。ボケ・被写界深度は再現しません。動画の手ブレ補正などの追加クロップには未対応です。読み込んだ写真には適用しません。</p>
+      </details>
+      <div class="actions footer"><button class="btn" id="lensCancel" type="button">戻る</button><button class="btn primary" type="submit">この設定を使う</button></div>
+    </form>
+  </dialog>
 
 <script>
 // ===== Weight Finder analysis core (pure, no DOM) =====
@@ -563,6 +600,20 @@ const WF = (() => {
     return { x: 0, y: (sh - ch) / 2, w: sw, h: ch };
   }
 
+  // Rectilinear projection: sensor length / (2*f) = tan(FOV/2).
+  // phoneFov is the CURRENT video stream's long-edge FOV, not a photo EXIF value.
+  function lensCropRect(sw, sh, ratio, focal, phoneFov) {
+    if (!focal) return { ...cropRect(sw, sh, ratio), fits: true };
+    if (!(sw > 0 && sh > 0 && focal > 0 && phoneFov >= 30 && phoneFov <= 120)) return null;
+    const scale = Math.max(sw, sh) / (2 * Math.tan(phoneFov * Math.PI / 360));
+    // ZV-E10 APS-C 23.5 x 15.6 mm. Orient the camera like the phone.
+    const w = (sw >= sh ? 23.5 : 15.6) / focal * scale;
+    const h = (sw >= sh ? 15.6 : 23.5) / focal * scale;
+    const inner = cropRect(w, h, ratio);
+    const x = (sw - w) / 2 + inner.x, y = (sh - h) / 2 + inner.y;
+    return { x, y, w: inner.w, h: inner.h, fits: x >= -1e-7 && y >= -1e-7 && x + inner.w <= sw + 1e-7 && y + inner.h <= sh + 1e-7 };
+  }
+
   // 手動の主役は元画像に対する0..1座標で保持し、切り抜き枠に変換する。
   function subjectInCrop(point, sw, sh, ratio) {
     if (!point) return null;
@@ -586,7 +637,7 @@ const WF = (() => {
     return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   }
 
-  return { analyze, direction, evalBalance, evalThirds, cropRect, subjectInCrop, scoreFor, fileStamp, THIRDS, TOL_X, TOL_Y };
+  return { analyze, direction, evalBalance, evalThirds, cropRect, lensCropRect, subjectInCrop, scoreFor, fileStamp, THIRDS, TOL_X, TOL_Y };
 })();
 if (typeof module !== 'undefined') module.exports = WF;
 </script>
@@ -631,6 +682,7 @@ if (typeof module !== 'undefined') module.exports = WF;
     facing: 'environment', mirror: false, cameraIds: [], deviceId: null, wasOk: false,
     photos: [], photoIdx: -1,
     manualSubject: null, photoEntry: null,
+    lens: 0, phoneFov: 67.3, lensFits: true, captureBusy: false,
   };
 
   const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
@@ -639,7 +691,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   const PREF_KEY = 'weight-finder:prefs';
   function loadPrefs() { try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (_) { return {}; } }
   function savePrefs() {
-    try { localStorage.setItem(PREF_KEY, JSON.stringify({ mode: st.mode, ratio: RATIOS[st.ratio].label, facing: st.facing })); } catch (_) {}
+    try { localStorage.setItem(PREF_KEY, JSON.stringify({ mode: st.mode, ratio: RATIOS[st.ratio].label, facing: st.facing, lens: st.lens, phoneFov: st.phoneFov })); } catch (_) {}
   }
   function applyPrefs() {
     const p = loadPrefs();
@@ -650,6 +702,8 @@ if (typeof module !== 'undefined') module.exports = WF;
     const ri = RATIOS.findIndex((r) => r.label === p.ratio);
     if (ri >= 0) { st.ratio = ri; setText(ratioVal, RATIOS[ri].label); }
     if (p.facing === 'user' || p.facing === 'environment') st.facing = p.facing;
+    if ([0, 16, 24, 50, 85].includes(p.lens)) st.lens = p.lens;
+    if (Number.isFinite(p.phoneFov) && p.phoneFov >= 30 && p.phoneFov <= 120) st.phoneFov = p.phoneFov;
   }
   const embedded = (() => { try { return window.self !== window.top; } catch (_) { return true; } })();
   const MSG_EMBED = '埋め込み表示ではカメラを使えません。写真での判定はできます。カメラで使うには、GitHub Pagesなどに置いたページで開いてください。';
@@ -708,9 +762,11 @@ if (typeof module !== 'undefined') module.exports = WF;
 
   // ---- 解析 ----
   const LONG = 160;
+  function activeCrop(sw, sh) {
+    return WF.lensCropRect(sw, sh, RATIOS[st.ratio].r, st.source === 'camera' ? st.lens : 0, st.phoneFov);
+  }
   // 現在の比率で切り抜き、長辺160pxに縮小したRGBAを返す
-  function sample(el, sw, sh) {
-    const crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r);
+  function sample(el, sw, sh, crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r)) {
     let aw, ah;
     if (crop.w >= crop.h) { aw = LONG; ah = Math.max(8, Math.round(LONG * crop.h / crop.w)); }
     else { ah = LONG; aw = Math.max(8, Math.round(LONG * crop.w / crop.h)); }
@@ -724,9 +780,13 @@ if (typeof module !== 'undefined') module.exports = WF;
   function analyzeNow(live) {
     const [sw, sh] = srcDims();
     if (!sw || !sh) return;
+    st.lensFits = activeCrop(sw, sh).fits;
+    if (!st.lensFits) {
+      resetAnalysis(); st.evl = { kind: 'lenswide' }; updateDeck(); st.dirty = true; return;
+    }
     let smp;
     try {
-      smp = sample(srcEl(), sw, sh);
+      smp = sample(srcEl(), sw, sh, activeCrop(sw, sh));
     } catch (e) {
       showError('画像を読み取れませんでした。別の写真で試してください。');
       return;
@@ -774,6 +834,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   }
 
   function evaluate() {
+    if (st.source === 'camera' && !st.lensFits) { st.evl = { kind: 'lenswide' }; return; }
     const e = st.ema;
     if (!e || !st.res) { st.evl = null; return; }
     if (st.flatShown && !(st.mode === 'thirds' && st.manualSubject)) { st.evl = { kind: 'flat' }; st.okB = st.okT = false; return; }
@@ -799,7 +860,10 @@ if (typeof module !== 'undefined') module.exports = WF;
     document.body.classList.toggle('no-source', st.source === 'none');
     setText($('sourceLabel'), st.source === 'camera' ? (st.paused ? 'カメラ · 一時停止中' : 'カメラ · ライブ') : '写真 · 端末内で解析');
     if (ev) {
-      if (ev.kind === 'flat') {
+      if (ev.kind === 'lenswide') {
+        instr = 'この画角は映像に収まりません';
+        status = 'スマホのより広いカメラ映像が必要です。画角設定も確認してください';
+      } else if (ev.kind === 'flat') {
         instr = '目立つものが少ない画面です';
         status = '重さの偏りを判定できません';
       } else if (ev.kind === 'nosubject') {
@@ -845,6 +909,11 @@ if (typeof module !== 'undefined') module.exports = WF;
     wR.setAttribute('r', rr.toFixed(1)); wR.setAttribute('cy', (35 - rr).toFixed(1));
 
     const camera = st.source === 'camera';
+    const lensActive = camera && st.lens > 0;
+    $('lensNote').hidden = !lensActive;
+    setText($('lensBtn'), st.lens ? `画角: ${st.lens}mm` : '画角: 通常');
+    setText($('lensNote'), `ZV-E10 ${st.lens}mm · 約${st.lens * 1.5}mm相当 · 画角の目安（実機で調整）`);
+    shootBtn.disabled = st.captureBusy || (lensActive && !st.lensFits);
     setText(shootBtn, camera ? '撮影' : 'この枠で保存');
     const showFlip = camera && st.cameraIds.length > 1;
     if (flipBtn.hidden === showFlip) { flipBtn.hidden = !showFlip; shootRow.classList.toggle('solo', !showFlip); }
@@ -900,7 +969,11 @@ if (typeof module !== 'undefined') module.exports = WF;
     octx.clearRect(0, 0, W, H);
     const [sw, sh] = srcDims();
     if (!sw) return;
-    const crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r);
+    const crop = activeCrop(sw, sh);
+    if (!crop.fits) {
+      octx.fillStyle = 'rgba(0,0,0,.45)'; octx.fillRect(0, 0, W, H);
+      return;
+    }
     const k = W / sw;
     const X = crop.x * k, Y = crop.y * k, CW = crop.w * k, CH = crop.h * k;
 
@@ -908,12 +981,13 @@ if (typeof module !== 'undefined') module.exports = WF;
       octx.imageSmoothingEnabled = true;
       octx.drawImage(mapCan, X, Y, CW, CH);
     }
-    if (RATIOS[st.ratio].r) {
+    if (RATIOS[st.ratio].r || (st.source === 'camera' && st.lens)) {
       octx.fillStyle = 'rgba(0,0,0,.62)';
       octx.fillRect(0, 0, W, Y);
       octx.fillRect(0, Y + CH, W, H - Y - CH);
       octx.fillRect(0, Y, X, CH);
       octx.fillRect(X + CW, Y, W - X - CW, CH);
+      octx.strokeStyle = '#fff'; octx.lineWidth = 1.5; octx.strokeRect(X, Y, CW, CH);
     }
     drawGrid(X, Y, CW, CH);
 
@@ -1034,6 +1108,7 @@ if (typeof module !== 'undefined') module.exports = WF;
   }
   function setSource(s) {
     st.source = s; st.paused = false;
+    st.lensFits = true;
     if (s !== 'photo') { st.manualSubject = null; st.photoEntry = null; }
     resetAnalysis();
     intro.hidden = true;
@@ -1366,6 +1441,33 @@ if (typeof module !== 'undefined') module.exports = WF;
   $('closeBtn').addEventListener('click', closeSource);
 
   // ---- 操作 ----
+  $('lensBtn').addEventListener('click', async () => {
+    $('lensSelect').value = String(st.lens); $('phoneFov').value = String(st.phoneFov);
+    $('lensCamera').replaceChildren(new Option('現在のカメラ', ''));
+    $('lensDialog').showModal();
+    if (st.source === 'camera' && navigator.mediaDevices) {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        for (const device of devices.filter(d => d.kind === 'videoinput')) {
+          $('lensCamera').add(new Option(device.label || `カメラ ${$('lensCamera').options.length}`, device.deviceId));
+        }
+      } catch (_) {}
+    }
+  });
+  $('mainFov').addEventListener('click', () => { $('phoneFov').value = '67.3'; });
+  $('wideFov').addEventListener('click', () => { $('phoneFov').value = '106.2'; });
+  $('lensCancel').addEventListener('click', () => $('lensDialog').close());
+  $('lensForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!$('lensForm').reportValidity()) return;
+    st.lens = Number($('lensSelect').value); st.phoneFov = Number($('phoneFov').value);
+    resetAnalysis();
+    if (st.source !== 'none') analyzeNow(false);
+    updateDeck(); savePrefs(); st.dirty = true;
+    $('lensDialog').close();
+    const device = $('lensCamera').value;
+    if (device && device !== st.deviceId && st.source === 'camera') startCamera(device);
+  });
   function chooseSubject(point) {
     st.manualSubject = point;
     if (st.photoEntry) {
@@ -1469,9 +1571,10 @@ if (typeof module !== 'undefined') module.exports = WF;
     const [sw, sh] = srcDims();
     if (!sw || !sh || shootBtn.disabled) return;
     const camera = st.source === 'camera';
-    shootBtn.disabled = true;
+    st.captureBusy = true; shootBtn.disabled = true;
     try {
-      const crop = WF.cropRect(sw, sh, RATIOS[st.ratio].r);
+      const crop = activeCrop(sw, sh);
+      if (!crop.fits) { showError('選んだレンズの画角がスマホ映像に収まりません。'); return; }
       const out = document.createElement('canvas');
       out.width = Math.max(1, Math.round(crop.w)); out.height = Math.max(1, Math.round(crop.h));
       const ctx = out.getContext('2d');
@@ -1496,14 +1599,14 @@ if (typeof module !== 'undefined') module.exports = WF;
       showToast(camera ? '撮影しました' : '保存しました');
     } catch (_) {
       showError('画像を書き出せませんでした。');
-    } finally { shootBtn.disabled = false; }
+    } finally { st.captureBusy = false; updateDeck(); }
   }
   shootBtn.addEventListener('click', capture);
   flipBtn.addEventListener('click', flipCamera);
   document.addEventListener('keydown', (event) => {
     if (event.key !== ' ' || event.repeat || st.source === 'none') return;
     const t = event.target;
-    if (t && (t.tagName === 'BUTTON' || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if ($('lensDialog').open || (t && (t.tagName === 'BUTTON' || t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable))) return;
     event.preventDefault();
     capture();
   });

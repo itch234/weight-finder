@@ -83,6 +83,41 @@ test('file stamp uses local time and zero padding', () => {
   assert.equal(WF.fileStamp(new Date(2026, 11, 31, 23, 59, 59)), '20261231_235959');
 });
 
+test('ZV-E10 lens crops follow sensor dimensions and focal length in both orientations', () => {
+  const wide = WF.lensCropRect(1200, 900, null, 24, 90);
+  assert.ok(Math.abs(wide.w - 587.5) < 1e-8);
+  assert.ok(Math.abs(wide.h - 390) < 1e-8);
+  for (const f of [16, 24, 50, 85]) {
+    const landscape = WF.lensCropRect(1200, 900, null, f, 90);
+    const portrait = WF.lensCropRect(900, 1200, null, f, 90);
+    assert.ok(landscape.fits && portrait.fits);
+    assert.ok(Math.abs(landscape.w * f - wide.w * 24) < 1e-8);
+    assert.equal(landscape.w, portrait.h);
+    assert.equal(landscape.h, portrait.w);
+    assert.ok(Math.abs(landscape.x * 2 + landscape.w - 1200) < 1e-8);
+  }
+});
+
+test('too-wide lens frames are rejected rather than silently clamped or scored', () => {
+  assert.equal(WF.lensCropRect(1200, 900, null, 16, 67.3).fits, false);
+  assert.equal(WF.lensCropRect(1200, 900, null, 16, 106.2).fits, true);
+  assert.equal(WF.lensCropRect(1200, 900, null, 24, 67.3).fits, true);
+  assert.equal(WF.lensCropRect(1200, 900, null, 24, NaN), null);
+});
+
+test('aspect ratios crop inside the simulated sensor and normal mode preserves existing behavior', () => {
+  for (const [w, h] of [[1200, 900], [900, 1200]]) {
+    const base = WF.lensCropRect(w, h, null, 50, 67.3);
+    for (const ratio of [1, 3 / 2, 16 / 9]) {
+      const lens = WF.lensCropRect(w, h, ratio, 50, 67.3);
+      assert.ok(lens.w <= base.w && lens.h <= base.h && lens.fits);
+      assert.ok(Math.abs(lens.w / lens.h - (w >= h ? ratio : 1 / ratio)) < 1e-8);
+      const normal = WF.lensCropRect(w, h, ratio, 0, 67.3), old = WF.cropRect(w, h, ratio);
+      for (const key of ['x', 'y', 'w', 'h']) assert.equal(normal[key], old[key]);
+    }
+  }
+});
+
 test('manual subject keeps its original-image position across crops and excludes cropped-out points', () => {
   const point = { x: 2 / 3, y: 1 / 3 };
   const full = WF.subjectInCrop(point, 1200, 800, null);

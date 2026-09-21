@@ -175,6 +175,38 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
     assert.equal(await page.locator('#shootBtn').innerText(), '撮影');
     await page.locator('#flipBtn').waitFor({ state: 'visible' });
     assert.ok(!await page.locator('#frame').evaluate(el => el.classList.contains('mirror')));
+    // Lens framing uses exactly the same crop for live analysis and JPEG output.
+    while (await page.locator('#ratioVal').innerText() !== 'フル') await page.locator('#ratioBtn').click();
+    const configureLens = async (focal, fov = '67.3') => {
+      await page.locator('#lensBtn').click();
+      await page.locator('#lensSelect').selectOption(String(focal));
+      await page.locator('#phoneFov').fill(fov);
+      await page.locator('#lensForm button[type="submit"]').click();
+    };
+    await configureLens(85);
+    await page.waitForFunction(() => document.getElementById('lensNote').textContent.includes('85mm'));
+    await page.locator('#pauseBtn').click();
+    const [lensShot] = await Promise.all([page.waitForEvent('download'), page.locator('#shootBtn').click()]);
+    const lensPath = path.join(output, 'lens-85mm.jpg'); await lensShot.saveAs(lensPath);
+    const lensDims = await page.evaluate(async data => {
+      const img = new Image(); img.src = 'data:image/jpeg;base64,' + data; await img.decode();
+      const crop = WF.lensCropRect(640, 480, null, 85, 67.3);
+      return { width: img.naturalWidth, height: img.naturalHeight, expectedWidth: Math.round(crop.w), expectedHeight: Math.round(crop.h) };
+    }, fs.readFileSync(lensPath).toString('base64'));
+    assert.equal(lensDims.width, lensDims.expectedWidth); assert.equal(lensDims.height, lensDims.expectedHeight);
+    await page.screenshot({ path: path.join(output, 'lens-85mm.png') });
+    await configureLens(16);
+    assert.match(await page.locator('#instr').innerText(), /収まりません/);
+    assert.equal(await page.locator('#score').innerText(), '--');
+    assert.ok(await page.locator('#shootBtn').isDisabled());
+    await page.locator('[data-mode="thirds"]').click();
+    assert.match(await page.locator('#instr').innerText(), /収まりません/);
+    await configureLens(16, '106.2');
+    assert.ok(await page.locator('#shootBtn').isEnabled());
+    assert.ok(!await page.locator('#instr').innerText().then(t => t.includes('収まりません')));
+    await configureLens(0);
+    await page.locator('[data-mode="balance"]').click();
+    await page.locator('#pauseBtn').click();
     const [shot] = await Promise.all([page.waitForEvent('download'), page.locator('#shootBtn').click()]);
     assert.match(shot.suggestedFilename(), /\.jpg$/);
     await page.evaluate(() => { window.mockFacing = 'user'; navigator.mediaDevices.getUserMedia = async (c) => { window.cameraRequests.push(c); return window.makeStream(); }; });
@@ -270,6 +302,22 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
     await touchPage.goto(base);
     await touchPage.locator('#demoBtn').tap();
     await touchPage.locator('[data-mode="thirds"]').tap();
+    const originalPhotoScore = await touchPage.locator('#score').innerText();
+    await touchPage.locator('#lensBtn').tap();
+    await touchPage.locator('#lensSelect').selectOption('50');
+    await touchPage.locator('#wideFov').tap();
+    assert.equal(await touchPage.locator('#phoneFov').inputValue(), '106.2');
+    await touchPage.locator('#mainFov').tap();
+    await touchPage.locator('#lensForm button[type="submit"]').tap();
+    assert.equal(await touchPage.locator('#score').innerText(), originalPhotoScore, 'imported photos must not be recropped by a lens preset');
+    assert.ok(await touchPage.locator('#lensNote').isHidden());
+    await touchPage.reload();
+    await touchPage.locator('#demoBtn').tap();
+    await touchPage.locator('#lensBtn').tap();
+    assert.equal(await touchPage.locator('#lensSelect').inputValue(), '50');
+    assert.equal(await touchPage.locator('#phoneFov').inputValue(), '67.3');
+    await touchPage.screenshot({ path: path.join(output, 'lens-settings.png') });
+    await touchPage.locator('#lensCancel').tap();
     const touchFrame = touchPage.locator('#frame');
     // A touch must work even if Safari never synthesizes a click on the canvas.
     await touchFrame.evaluate(el => {
